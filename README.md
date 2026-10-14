@@ -1,6 +1,6 @@
 # Discount Model Router
 
-Routes AI requests only to discounted OpenRouter models. Auto-switches to the next best discounted model when the current one falls off the discount list.
+Routes AI requests to discounted OpenRouter models. Uses a decision model to pick the best discounted candidate for each request, guided by user-configurable feature weights.
 
 ## Quick Start
 
@@ -16,13 +16,13 @@ docker compose up --build
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `OPENROUTER_API_KEY` | | OpenRouter API key for forwarding requests |
-| `ROUTER_MODEL` | `typesafe/jev-1.13` | System One decision model (called via OpenRouter Decisions API) |
-| `ROUTER_API_KEY` | | API key for the routing model |
-| `ROUTER_API_BASE` | `https://openrouter.ai/api/v1` | API base URL for the routing model |
+| `ROUTER_MODEL` | `typesafe/jev-1.13` | Decision model (called via OpenRouter Decisions API, pluggable) |
+| `ROUTER_API_KEY` | | API key for the decision model |
+| `ROUTER_API_BASE` | `https://openrouter.ai/api/v1` | API base URL for the decision model |
 | `ROUTER_INVENTORY_URL` | `https://openrouter.ai/api/v1` | OpenRouter API URL for fetching discounted models |
 | `ROUTER_MODE` | `auto` | Routing mode: cloud, local, auto |
 | `ROUTER_OMLX_BASE` | `http://127.0.0.1:8000` | Local oMLX fallback base URL |
-| `ROUTER_MIN_DISCOUNT` | `0.50` | Minimum discount threshold (0.0–1.0) |
+| `ROUTER_MIN_DISCOUNT` | `0.25` | Minimum discount threshold (0.0–1.0) |
 | `ROUTER_MIN_CONFIDENCE` | `0.30` | Minimum decision-model confidence to accept a pick; below it the router uses the best available model |
 | `ROUTER_PREFERENCE` | `cost` | Tie-breaker handed to the decision model: `cost`, `quality`, or `none` |
 | `ROUTER_FALLBACK_MODE` | `static` | `static` = auto-fallback to `ROUTER_STATIC_FALLBACK`; `halt` = return 503 |
@@ -30,6 +30,8 @@ docker compose up --build
 | `ROUTER_MODEL_HANDOFF` | `next_best` | Behavior when selected model falls off discount list: `stop`, `next_best`, `keep_current` |
 | `ROUTER_CACHE_FILE` | `data/models.json` | Path to cached discounted models |
 | `ROUTER_REFRESH_CRON` | `0 * * * *` | Cron schedule for inventory refresh (default: hourly) |
+| `ROUTER_MIN_CONTEXT_LENGTH` | `131072` | Minimum context length in tokens; models with shorter context are excluded |
+| `ROUTER_WEIGHTS` | `{"discount": 0.4, "latency": 0.2, "uptime": 0.2, "coding_index": 0.2, "intelligence_index": 0.0, "agentic_index": 0.0}` | Feature weights for the decision model. JSON string or dict. Features missing from a candidate are treated as 0. |
 | `LANGFUSE_HOST` | | Langfuse base URL (e.g. `http://localhost:3000`). Set with the two keys below to send traces to Langfuse; otherwise traces print to console |
 | `ROUTER_TRACE_INPUT` | `truncated` | What a trace records as input: `none`, `decision`, `truncated`, or `full` |
 | `ROUTER_TRACE_INPUT_CHARS` | `500` | Character cap when `ROUTER_TRACE_INPUT=truncated` |
@@ -41,9 +43,25 @@ docker compose up --build
 
 When the selected model falls off the discount list, the router handles it based on `ROUTER_MODEL_HANDOFF`:
 
-- **`stop`** (default: `next_best`) — Returns 400 with a message telling the user the model is no longer discounted and they need to pick a new one.
-- **`next_best`** — Automatically switches to the best available discounted model.
+- **`stop`** — Returns 400 with a message telling the user the model is no longer discounted.
+- **`next_best`** (default) — Automatically switches to the best available discounted model.
 - **`keep_current`** — Continues using the model even though it's no longer discounted.
+
+## How It Works
+
+1. **Inventory refresh** (hourly cron): sweeps OpenRouter `/models` and every `/models/{id}/endpoints` concurrently to find discounted models. Discounts are per-endpoint; the router picks the endpoint with the largest discount among trustworthy providers (uptime ≥95%, request count ≥100). Non-chat models (audio/video/embedding/placeholder rows) are dropped. Saved to `data/models.json`.
+
+2. **Request arrives** at `/v1/chat/completions`.
+
+3. **Hard requirements derived** from the transcript: image parts, tool calls, and an estimated context floor (`ROUTER_MIN_CONTEXT_LENGTH`, default 128K). Models that cannot satisfy any of these are excluded.
+
+4. **Decision model called** via OpenRouter Decisions API (`POST /api/alpha/decisions`). The eligible pool (all models passing hard requirements) is sent as `criteria` — one entry per candidate with its facts (name, description, modalities, benchmark scores, discount, price, serving endpoint stats). The user's configured weights are included in the instructions so the decision model weighs trade-offs accordingly.
+
+5. **Decision model picks** a candidate. If confidence ≥ `ROUTER_MIN_CONFIDENCE`, the request is forwarded. Otherwise the best available discounted model is used.
+
+6. **Forwarding**: proxied to OpenRouter with streaming support and rate limiting.
+
+7. **Handoff**: if the selected model falls off the discount list before the next refresh, `ROUTER_MODEL_HANDOFF` controls whether to stop, switch to the next best, or keep using it.
 
 ## Telemetry
 
@@ -103,19 +121,18 @@ input or output — that is correct, not a gap.
 ```
 Client → /v1/chat/completions → classify_request() → select discounted model
                                               ↓
-                                    decisions API (Jev) picks candidate
+                                    decisions API picks candidate
                                       ↙          ↘
                                  confident    low confidence
                                     ↓              ↓
                               forward()      best available model
 ```
 
-- **Inventory**: Fetches discounted models from OpenRouter `/models` and `/models/{id}/endpoints` endpoints concurrently (semaphore 10). Cached to `data/models.json`. Refreshed on cron schedule.
-- **Router**: Sends the request transcript verbatim to the System One decision model (`typesafe/jev-1.13` via `POST /api/alpha/decisions`). Candidates are filtered to models that can serve the request (image input, tools, context), then capped to a small blended pool. Accepts the pick only when confidence ≥ `ROUTER_MIN_CONFIDENCE`.
-- **Candidate selection**: `_rank_candidates()` blends benchmark rank and discount rank so the capped pool spans cheap-weak to strong-expensive. Ranking by discount alone gives five cheap near-twins; by score alone, five expensive near-twins; either way the decision model has no tradeoff to reason about.
-- **Request requirements**: `_request_requirements()` derives hard constraints from the transcript — image parts, tool calls, and an estimated context floor — and `_filter_candidates()` drops models that cannot satisfy them. Oversized transcripts are truncated from the middle before being sent; the estimate uses the untruncated text.
+- **Inventory**: Fetches discounted models from OpenRouter `/models` and `/models/{id}/endpoints` endpoints concurrently (semaphore 10). Discount data is per-endpoint — the router scans all endpoints per model and picks the best trustworthy one. Cached to `data/models.json`. Refreshed on cron schedule.
+- **Router**: Derives hard requirements from the transcript (image, tools, context), filters the candidate pool, and sends the full eligible set to the decision model with user-configured feature weights. No shortlist, no ranking bias — the decision model sees all candidates and weighs them according to the configured weights.
+- **Decision model**: Called via OpenRouter Decisions API (`POST /api/alpha/decisions`). The decision model is pluggable — Jev today, local open-weight models later. Returns a typed answer with a calibrated `confidence`.
+- **Forwarding**: Proxies to OpenRouter with streaming support and rate limiting.
 - **Rate Limiter**: Reactive — tracks 429 responses and backs off per-model.
-- **Forwarding**: Proxies to OpenRouter with streaming support and retry logic.
 
 ## Development
 
@@ -127,47 +144,32 @@ uv run pyright src/
 
 ### Tuning notes
 
-Live testing against the real discounted pool informed the defaults:
+Live testing against the real discounted pool informed the defaults.
 
-- **`MAX_CANDIDATES=5`.** Pool size is the strongest lever on confidence.
-  Measured, no tie-breaker, same coding task:
+- **`ROUTER_MIN_DISCOUNT=0.25`**. The threshold controls which models enter the pool. Lower values include more candidates (and more competition for the decision model). The default was 0.50 but was lowered to 0.25 after the inventory sweep was fixed to scan all endpoints — models with a discount on a non-first endpoint were previously missed.
 
-  | candidates | confidence | tokens in |
-  |---:|---:|---:|
-  | 3 | 0.06 | 678 |
-  | **5** | **0.53** | **893** |
-  | 8 | 0.35 | 1261 |
-  | 21 | 0.10 | 2724 |
+- **`ROUTER_WEIGHTS`**. The user-configurable feature weights guide the decision model's selection. The default weights favour discount (0.4) with moderate weight on latency, uptime, and coding capability. All weights are passed to the decision model as evaluation guidance; the decision model weighs them in context. Features missing from a candidate are treated as 0.
+  Available features: `discount` (%), `latency` (p50 ms), `uptime` (%), `coding_index`, `intelligence_index`, `agentic_index`.
 
-  With 21 near-identical text models the decision model spreads probability
-  thinly and lands near 0.10. With 5 it is three times more confident and
-  uses a third of the tokens. Below 5 it is unsure the right option is even
-  present — the curve is an inverted U with the peak at 5.
-- **Blended pool selection.** Keeping both cheap and strong candidates
-  visible lifts confidence further: ~0.80 for a coding task, against ~0.52
-  when the pool is picked by discount alone and ~0.38 by score alone. A pool
-  whose members genuinely differ gives the decision model something to weigh.
 - **`ROUTER_MIN_CONFIDENCE=0.30`.** Confidence for model selection sits
   roughly 0.30–0.55 with a good pool. A 0.55 bar abstained often; 0.30 leaves
   room for the crossing cases while still rejecting the near-coin-flip
   answers a bad pool produces.
+
 - **`ROUTER_PREFERENCE=cost`.** Of the tie-breakers tested, only cost raised
   confidence (0.30 → 0.35 on a large pool). Open-weight and closed-weight
   preferences *lowered* it, and a reasoning preference lowered it and was
   ignored. A detailed judging rubric lowered it too. A clean question with one
   real discriminator beats a long list of constraints.
-- **Verbatim transcript, no keyword tag.** An earlier version derived a task
-  label (`coding`, `writing`, ...) from keywords and sent that instead of the
-  prompt. It removed the signal the decision needs. Sending the real
-  transcript routes image requests to image-capable models, which a keyword
-  tag cannot do.
 
-Capability hints matter: each candidate is described with its name, provider
-summary, modalities, features (tool calling / reasoning / structured output),
-context length, benchmark scores (intelligence / coding / agentic), discount,
-and effective input price. Non-chat models (audio/video/embedding/placeholder
-rows) are dropped from the inventory before routing, because the scraper sees
-discount badges on them too.
+- **No transcript sent to the decision model**. The user prompt is not forwarded. Hard requirements (image/tools/context) are derived from it and applied as filters; the user's weights define the optimization objective. Sending the transcript was found to bias the decision model toward whatever the user happened to write rather than the features that matter.
+
+- **No shortlist cap**. The decision model sees all eligible candidates. Capping the pool was found to collapse confidence when candidates are near-identical, and the rank-sum shortlist introduced bias by pre-selecting which models the decision model could choose from.
+
+- **Verbatim benchmark scores** are included per candidate (intelligence, coding, agentic). Missing scores are treated as 0, not omitted, so the decision model can distinguish "no data" from "low score."
+
+- **Serving endpoint facts** (endpoint name, latency p50, throughput, uptime, request count) are included per candidate so the decision model can weigh provider reliability and speed alongside discount and capability.
+
 
 ### Verifying the decision model
 
