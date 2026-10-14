@@ -34,3 +34,17 @@ Treat multiple providers (Requesty, Fireworks, OpenRouter, ...) as one unified p
 
 ### Rationale
 OpenRouter is the default today, but Requesty and Fireworks offer competitive pricing and models not available on OpenRouter. Treating them as one pool lets the decision model pick the best model regardless of provider, as long as the user has valid credentials and credits.
+
+## Support for running open weight decision models locally
+
+Allow the decision model to run locally using open-weight models instead of relying on a hosted API.
+
+### Scope
+- `src/config.py` — add `ROUTER_DECISION_MODEL_PROVIDER` (openrouter, ollama, vllm, etc.) and provider-specific config
+- `src/router.py` — abstract the decision model call behind a provider interface so the same `POST /api/alpha/decisions` contract is used regardless of backend
+- `src/main.py` — lifespan should start/stop the local inference server if configured
+- `.env.example` — local decision model config vars
+- `README.md` — local decision model setup docs
+
+### Rationale
+Running the decision model locally removes dependency on OpenRouter availability and latency for the routing step. It also enables offline operation and avoids per-request costs for the decision model call. The Decisions API contract (`{model, state, questions}` → typed `answers`) is provider-agnostic, so the router only needs a thin adapter per backend.

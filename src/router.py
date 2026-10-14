@@ -1,12 +1,16 @@
-"""Model selection via a System One decision model (typesafe/jev-1.13).
+"""Model selection via a decision model (pluggable provider).
 
-The decision model is NOT a chat model. It is called through the OpenRouter
-Decisions API:
+The decision model is NOT a chat model. It is called through the
+Decisions API, currently via OpenRouter but pluggable to local
+inference backends (ollama, vLLM, etc.).
+
+OpenRouter Decisions API:
 
     POST https://openrouter.ai/api/alpha/decisions
 
-Request carries ``state`` plus a map of typed ``questions``; the response
-carries typed ``answers`` with probabilities and a calibrated confidence.
+Request carries ``state`` plus a map of typed ``questions``; the
+response carries typed ``answers`` with probabilities and a calibrated
+confidence.
 See: https://openrouter.ai/docs/api/api-reference/alphadecisions
 """
 
