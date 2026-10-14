@@ -173,54 +173,114 @@ async def forward_to_openrouter(
     body = _build_forward_body(messages, model, stream, request)
 
     max_retries = 3
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    if stream:
+        # Streaming needs its own retry loop around connection setup. It cannot
+        # reuse the loop below, because the response body is consumed later, in
+        # the generator; the retry decision has to happen before any byte is
+        # handed to the client. Once the connection is open the client and
+        # stream are transferred to the generator, which closes them.
+        client: httpx.AsyncClient | None = None
+        stream_ctx = None
+        resp = None
+        try:
+            for attempt in range(max_retries):
+                await rate_limiter.wait_if_needed(model)
+
+                client = httpx.AsyncClient(timeout=120.0)
+                stream_ctx = client.stream(
+                    "POST",
+                    f"{api_base}/v1/chat/completions",
+                    headers=headers,
+                    json=body,
+                )
+                resp = await stream_ctx.__aenter__()
+
+                # A 429 at setup is retryable: nothing has been sent yet.
+                if _apply_rate_limit_policy(
+                    resp.status_code, model, attempt, max_retries
+                ):
+                    await stream_ctx.__aexit__(None, None, None)
+                    await client.aclose()
+                    client = stream_ctx = resp = None
+                    await asyncio.sleep(2**attempt)
+                    continue
+
+                if resp.status_code >= 400:
+                    # Not retryable, and it must not look like a success. Read
+                    # the body for the log, then surface a real error so the
+                    # caller sees a failure instead of an empty 200 stream.
+                    status = resp.status_code
+                    detail = (await resp.aread()).decode("utf-8", "replace")
+                    logger.error(
+                        f"Upstream stream failed {status}: {detail[:500]}"
+                    )
+                    await stream_ctx.__aexit__(None, None, None)
+                    await client.aclose()
+                    client = stream_ctx = resp = None
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Upstream stream failed {status}",
+                    )
+
+                rate_limiter.clear(model)
+                break
+            else:
+                raise HTTPException(status_code=503, detail="Max retries exceeded")
+
+            # Ownership of client and stream_ctx moves into the generator so
+            # the connection stays open for the whole response. Returning
+            # while still inside the context would close it before FastAPI
+            # iterates the body, truncating the stream.
+            async def event_generator(
+                gen_resp=resp, gen_ctx=stream_ctx, gen_client=client
+            ):
+                try:
+                    # Pass SSE frames through verbatim. Re-joining them corrupts
+                    # the framing the downstream OpenAI client relies on.
+                    async for chunk in gen_resp.aiter_raw():
+                        yield chunk
+                finally:
+                    await gen_ctx.__aexit__(None, None, None)
+                    await gen_client.aclose()
+
+            return StreamingResponse(
+                event_generator(), media_type="text/event-stream"
+            )
+        except BaseException:
+            # Setup failed before the generator existed to own these. httpx
+            # tolerates __aexit__ after a failed __aenter__, so this also
+            # covers a failure while opening the connection.
+            if stream_ctx is not None:
+                await stream_ctx.__aexit__(None, None, None)
+            if client is not None:
+                await client.aclose()
+            raise
+
     for attempt in range(max_retries):
         await rate_limiter.wait_if_needed(model)
 
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
         async with httpx.AsyncClient(timeout=120.0) as client:
             try:
-                if stream:
-                    async with client.stream(
-                        "POST",
-                        f"{api_base}/v1/chat/completions",
-                        headers=headers,
-                        json=body,
-                    ) as resp:
-                        if _apply_rate_limit_policy(
-                            resp.status_code, model, attempt, max_retries
-                        ):
-                            await asyncio.sleep(2**attempt)
-                            continue
-                        resp.raise_for_status()
-                        rate_limiter.clear(model)
-
-                        async def event_generator(resp_inner=resp):
-                            async for line in resp_inner.aiter_lines():
-                                if line.startswith("data:"):
-                                    yield f"{line}\n"
-
-                        return StreamingResponse(
-                            event_generator(), media_type="text/event-stream"
-                        )
-                else:
-                    resp = await client.post(
-                        f"{api_base}/v1/chat/completions",
-                        headers=headers,
-                        json=body,
-                    )
-                    if _apply_rate_limit_policy(
-                        resp.status_code, model, attempt, max_retries
-                    ):
-                        await asyncio.sleep(2**attempt)
-                        continue
-                    resp.raise_for_status()
-                    rate_limiter.clear(model)
-                    # Pass through OpenRouter response directly — preserves tool calls,
-                    # logprobs, and full OpenAI schema.
-                    return resp.json()
+                resp = await client.post(
+                    f"{api_base}/v1/chat/completions",
+                    headers=headers,
+                    json=body,
+                )
+                if _apply_rate_limit_policy(
+                    resp.status_code, model, attempt, max_retries
+                ):
+                    await asyncio.sleep(2**attempt)
+                    continue
+                resp.raise_for_status()
+                rate_limiter.clear(model)
+                # Pass through OpenRouter response directly — preserves tool calls,
+                # logprobs, and full OpenAI schema.
+                return resp.json()
 
             except httpx.HTTPStatusError:
                 raise
