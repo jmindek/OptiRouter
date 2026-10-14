@@ -71,7 +71,9 @@ def _as_float(value) -> float | None:
         return None
 
 
-async def fetch_discounted_models(client: httpx.AsyncClient | None = None) -> list[ModelInfo]:
+async def fetch_discounted_models(
+    client: httpx.AsyncClient | None = None,
+) -> list[ModelInfo]:
     """Fetch all models from OpenRouter and keep those with an active discount.
 
     Discounts are not in /models: they only appear in each model's
@@ -128,9 +130,7 @@ async def _fetch_via_endpoints(
 
     semaphore = asyncio.Semaphore(ENDPOINT_CONCURRENCY)
     tasks = [
-        fetch_endpoint(
-            c, base_url, headers, mid, semaphore, models_by_id.get(mid, {})
-        )
+        fetch_endpoint(c, base_url, headers, mid, semaphore, models_by_id.get(mid, {}))
         for mid in model_ids
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -180,6 +180,7 @@ def _pick_endpoint(endpoints: list[dict]) -> dict | None:
     Deliberately does not weigh latency against discount: that trade belongs
     to the decision model, which needs the facts to make it.
     """
+
     def discount_of(e: dict) -> float:
         return float((e.get("pricing") or {}).get("discount", 0) or 0)
 

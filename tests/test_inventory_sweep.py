@@ -106,8 +106,12 @@ def _endpoint_payload(discount: float, prompt: str, completion: str, ctx: int) -
 class TestSweepIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_discounted_models_sweeps_endpoints(self):
         endpoints = {
-            "inception/mercury-2.5": _endpoint_payload(0.8, "0.00000004", "0.00000015", 260000),
-            "upstage/solar-pro4": _endpoint_payload(0.7, "0.00000009", "0.00000036", 524288),
+            "inception/mercury-2.5": _endpoint_payload(
+                0.8, "0.00000004", "0.00000015", 260000
+            ),
+            "upstage/solar-pro4": _endpoint_payload(
+                0.7, "0.00000009", "0.00000036", 524288
+            ),
             # Audio model: discounted, must be filtered out.
             "elevenlabs/eleven-v4": _endpoint_payload(0.5, "0.00000001", "0", 0),
             # Below the default 50% threshold.
@@ -122,9 +126,7 @@ class TestSweepIntegration(unittest.IsolatedAsyncioTestCase):
                 resp.json.return_value = MODELS_PAYLOAD
             else:
                 mid = url.split("/models/")[1].removesuffix("/endpoints")
-                resp.json.return_value = endpoints.get(
-                    mid, {"data": {"endpoints": []}}
-                )
+                resp.json.return_value = endpoints.get(mid, {"data": {"endpoints": []}})
             return resp
 
         with tempfile.TemporaryDirectory() as tmp_dir:

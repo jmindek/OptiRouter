@@ -27,7 +27,10 @@ URL = f"{_decisions_base(API_BASE)}/api/alpha/decisions"
 TASKS = [
     ("code", "Write a Python function that reverses a linked list using recursion."),
     ("email", "Draft a short, firm email declining a vendor's renewal proposal."),
-    ("sql_debug", "Find the bug in this complex PostgreSQL query with 4 recursive CTEs."),
+    (
+        "sql_debug",
+        "Find the bug in this complex PostgreSQL query with 4 recursive CTEs.",
+    ),
     ("chat", "Say hello and give a one-sentence inspiring quote."),
 ]
 
@@ -38,6 +41,7 @@ PRIORITIES = {
     "balanced": "Balance capability and discount equally. Do not pick a weak model for complex tasks just to save cost, but take the discount when tasks are simple.",
 }
 
+
 async def run_probe():
     models = _rank_candidates(load_cache())[:5]
     criteria = {m.id: _describe_model(m) for m in models}
@@ -45,7 +49,9 @@ async def run_probe():
     print(f"Candidates ({len(models)}):")
     for m in models:
         lat = f"{m.latency_p50_ms:.0f}ms" if m.latency_p50_ms else "n/a"
-        print(f"  {m.id[:38]:38s} | disc: {m.discount_pct:2.0f}% | intel: {m.intelligence_index} | code: {m.coding_index} | {lat}")
+        print(
+            f"  {m.id[:38]:38s} | disc: {m.discount_pct:2.0f}% | intel: {m.intelligence_index} | code: {m.coding_index} | {lat}"
+        )
     print("=" * 80)
 
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -72,7 +78,10 @@ async def run_probe():
                 }
                 resp = await client.post(
                     URL,
-                    headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Bearer {API_KEY}",
+                        "Content-Type": "application/json",
+                    },
                     json=payload,
                 )
                 if resp.status_code != 200:
@@ -82,6 +91,7 @@ async def run_probe():
                 choice = a.get("choice", "?").split("/")[-1]
                 conf = a.get("confidence", 0.0)
                 print(f"  [{t_type:10s}] -> {choice:25s} (conf: {conf:.2f})")
+
 
 if __name__ == "__main__":
     asyncio.run(run_probe())

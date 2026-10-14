@@ -16,7 +16,9 @@ from src.langfuse_exporter import LangfuseSpanProcessor
 
 
 def _make_processor(**kw) -> LangfuseSpanProcessor:
-    opts = dict(host="http://localhost:3000", public_key="pk-lf-x", secret_key="sk-lf-y")
+    opts = dict(
+        host="http://localhost:3000", public_key="pk-lf-x", secret_key="sk-lf-y"
+    )
     opts.update(kw)
     return LangfuseSpanProcessor(**opts)
 
@@ -95,7 +97,6 @@ class TestToBatch(unittest.TestCase):
         proc = _make_processor()
         _, sp = proc._to_batch(_finished_span(error=False))
         self.assertNotIn("level", sp["body"])
-
 
     def test_trace_carries_input_output(self):
         """Attributes promoted so Langfuse's trace view shows content."""

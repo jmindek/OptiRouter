@@ -8,15 +8,36 @@ from src.models import ModelInfo
 class TestModelInInventory(unittest.TestCase):
     def test_model_found(self):
         models = [
-            ModelInfo(id="model-a", discount_pct=50.0, provider="p", input_price=0.001, output_price=0.002, context_length=4096),
-            ModelInfo(id="model-b", discount_pct=75.0, provider="p", input_price=0.001, output_price=0.002, context_length=4096),
+            ModelInfo(
+                id="model-a",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+            ),
+            ModelInfo(
+                id="model-b",
+                discount_pct=75.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+            ),
         ]
         self.assertTrue(model_in_inventory("model-a", models))
         self.assertTrue(model_in_inventory("model-b", models))
 
     def test_model_not_found(self):
         models = [
-            ModelInfo(id="model-a", discount_pct=50.0, provider="p", input_price=0.001, output_price=0.002, context_length=4096),
+            ModelInfo(
+                id="model-a",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+            ),
         ]
         self.assertFalse(model_in_inventory("model-c", models))
 
@@ -27,8 +48,22 @@ class TestModelInInventory(unittest.TestCase):
 class TestHandleModelHandoff(unittest.TestCase):
     def setUp(self):
         self.models = [
-            ModelInfo(id="best-model", discount_pct=75.0, provider="p", input_price=0.001, output_price=0.002, context_length=4096),
-            ModelInfo(id="second-model", discount_pct=50.0, provider="p", input_price=0.001, output_price=0.002, context_length=4096),
+            ModelInfo(
+                id="best-model",
+                discount_pct=75.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+            ),
+            ModelInfo(
+                id="second-model",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+            ),
         ]
 
     def test_handoff_stop(self):

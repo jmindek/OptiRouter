@@ -122,7 +122,9 @@ class TestP0Regressions(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "hi"}],
                 model="model-1",
                 stream=False,
-                request=ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}]),
+                request=ChatCompletionRequest(
+                    messages=[{"role": "user", "content": "hi"}]
+                ),
             )
             assert captured_url is not None
             self.assertIn("/v1/chat/completions", captured_url)
@@ -253,11 +255,13 @@ class TestP0Regressions(unittest.IsolatedAsyncioTestCase):
                 pass
 
         rate_limiter._backoff_until.clear()
-        with patch("httpx.AsyncClient", FakeClient), patch(
-            "asyncio.sleep", new=AsyncMock()
-        ), patch.object(
-            rate_limiter, "record_429", wraps=rate_limiter.record_429
-        ) as record_spy:
+        with (
+            patch("httpx.AsyncClient", FakeClient),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch.object(
+                rate_limiter, "record_429", wraps=rate_limiter.record_429
+            ) as record_spy,
+        ):
             response = await forward_to_openrouter(
                 messages=[{"role": "user", "content": "hi"}],
                 model="stream-429-model",

@@ -48,7 +48,9 @@ def build_payload() -> dict:
 
 async def main() -> None:
     payload = build_payload()
-    print(f"=== REQUEST ({len(payload['questions']['target']['criteria'])} candidates) ===")
+    print(
+        f"=== REQUEST ({len(payload['questions']['target']['criteria'])} candidates) ==="
+    )
     print(f"POST {URL}")
     print(f"task: {TASK}")
     print()

@@ -78,7 +78,9 @@ async def refresh_inventory():
             logger.error(f"Inventory refresh failed: {e}")
 
 
-def _build_forward_body(messages: list, model: str, stream: bool, request: ChatCompletionRequest) -> dict:
+def _build_forward_body(
+    messages: list, model: str, stream: bool, request: ChatCompletionRequest
+) -> dict:
     """Build the JSON body to forward to OpenRouter, preserving all original fields."""
     msg_list = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages]
     body: dict = {"model": model, "messages": msg_list, "stream": stream}
@@ -124,7 +126,9 @@ def _record_trace_content(
     if policy == "full":
         span.set_attribute("input", render_transcript(messages))
     elif policy == "truncated":
-        span.set_attribute("input", render_transcript(messages)[: settings.trace_input_chars])
+        span.set_attribute(
+            "input", render_transcript(messages)[: settings.trace_input_chars]
+        )
     elif policy == "decision":
         pass  # no prompt content, decision only
 
@@ -158,7 +162,10 @@ def _apply_rate_limit_policy(
 
 
 async def forward_to_openrouter(
-    messages: list, model: str, stream: bool = False, request: ChatCompletionRequest | None = None
+    messages: list,
+    model: str,
+    stream: bool = False,
+    request: ChatCompletionRequest | None = None,
 ) -> dict | StreamingResponse:
     """Forward request to OpenRouter with reactive rate limiting.
 
@@ -216,9 +223,7 @@ async def forward_to_openrouter(
                     # caller sees a failure instead of an empty 200 stream.
                     status = resp.status_code
                     detail = (await resp.aread()).decode("utf-8", "replace")
-                    logger.error(
-                        f"Upstream stream failed {status}: {detail[:500]}"
-                    )
+                    logger.error(f"Upstream stream failed {status}: {detail[:500]}")
                     await stream_ctx.__aexit__(None, None, None)
                     await client.aclose()
                     client = stream_ctx = resp = None
@@ -248,9 +253,7 @@ async def forward_to_openrouter(
                     await gen_ctx.__aexit__(None, None, None)
                     await gen_client.aclose()
 
-            return StreamingResponse(
-                event_generator(), media_type="text/event-stream"
-            )
+            return StreamingResponse(event_generator(), media_type="text/event-stream")
         except BaseException:
             # Setup failed before the generator existed to own these. httpx
             # tolerates __aexit__ after a failed __aenter__, so this also
@@ -339,7 +342,9 @@ async def chat_completions(request: ChatCompletionRequest):
             span.set_attribute("router.model", model)
             _record_trace_content(span, messages, model, decision)
 
-            result = await forward_to_openrouter(messages, model, request.stream, request)
+            result = await forward_to_openrouter(
+                messages, model, request.stream, request
+            )
             if isinstance(result, StreamingResponse):
                 return result
 

@@ -127,9 +127,7 @@ class LangfuseSpanProcessor(SpanProcessor):
             span_body["output"] = trace_output
 
         if attrs:
-            span_body["metadata"] = {
-                k: self._jsonable(v) for k, v in attrs.items()
-            }
+            span_body["metadata"] = {k: self._jsonable(v) for k, v in attrs.items()}
 
         status = span.status
         # Langfuse uses level: ERROR for failures, DEFAULT otherwise.

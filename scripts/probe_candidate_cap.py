@@ -129,7 +129,10 @@ async def main() -> None:
         for p in picks[cap]:
             counts[p] = counts.get(p, 0) + 1
         top = sorted(counts.items(), key=lambda kv: -kv[1])
-        print(f"cap {cap:3d}: " + ", ".join(f"{k.split('/')[-1]}({v})" for k, v in top[:5]))
+        print(
+            f"cap {cap:3d}: "
+            + ", ".join(f"{k.split('/')[-1]}({v})" for k, v in top[:5])
+        )
 
     print("\n=== per-task confidence by cap ===")
     idx = 0

@@ -36,11 +36,7 @@ def facts(e: dict) -> dict | None:
 
 
 def eligible(f: dict) -> bool:
-    return bool(
-        f["lat"]
-        and f["reqs"] >= MIN_REQUESTS
-        and (f["up"] or 0) >= MIN_UPTIME
-    )
+    return bool(f["lat"] and f["reqs"] >= MIN_REQUESTS and (f["up"] or 0) >= MIN_UPTIME)
 
 
 def load():
@@ -91,7 +87,9 @@ def main() -> None:
 
     print(f"models: {len(data)}  endpoints: {sum(len(v) for v in data.values())}\n")
 
-    print(f"{'rule':22s} {'#differ':>8s} {'mean disc':>10s} {'med p50':>9s} {'mean p50':>10s} {'med tok/s':>10s}")
+    print(
+        f"{'rule':22s} {'#differ':>8s} {'mean disc':>10s} {'med p50':>9s} {'mean p50':>10s} {'med tok/s':>10s}"
+    )
     for name in rules:
         d_ = l_ = t_ = 0.0
         n = 0

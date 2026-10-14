@@ -66,24 +66,39 @@ LAB_SCORE = {
 
 PROFILES = {
     "P1_discount_heavy": {
-        "discount": 0.50, "intelligence": 0.20, "latency": 0.10,
-        "coding": 0.10, "uptime": 0.10,
+        "discount": 0.50,
+        "intelligence": 0.20,
+        "latency": 0.10,
+        "coding": 0.10,
+        "uptime": 0.10,
     },
     "P2_capability_heavy": {
-        "intelligence": 0.40, "discount": 0.20, "coding": 0.20,
-        "latency": 0.10, "uptime": 0.10,
+        "intelligence": 0.40,
+        "discount": 0.20,
+        "coding": 0.20,
+        "latency": 0.10,
+        "uptime": 0.10,
     },
     "P3_latency_heavy": {
-        "latency": 0.40, "discount": 0.25, "intelligence": 0.20,
-        "coding": 0.10, "uptime": 0.05,
+        "latency": 0.40,
+        "discount": 0.25,
+        "intelligence": 0.20,
+        "coding": 0.10,
+        "uptime": 0.05,
     },
     "P4_balanced": {
-        "discount": 0.20, "intelligence": 0.20, "coding": 0.20,
-        "latency": 0.20, "uptime": 0.20,
+        "discount": 0.20,
+        "intelligence": 0.20,
+        "coding": 0.20,
+        "latency": 0.20,
+        "uptime": 0.20,
     },
     "P5_lab_heavy": {
-        "lab": 0.40, "discount": 0.25, "intelligence": 0.20,
-        "coding": 0.10, "uptime": 0.05,
+        "lab": 0.40,
+        "discount": 0.25,
+        "intelligence": 0.20,
+        "coding": 0.10,
+        "uptime": 0.05,
     },
 }
 
@@ -246,14 +261,20 @@ async def main() -> None:
             print(f"      jev  : {chosen}  (conf {conf:.2f})")
             print(f"      argmax: {argmax}")
             top2 = sorted(scores.items(), key=lambda kv: -kv[1])[:2]
-            print(f"      scores: " + ", ".join(f"{k.split('/')[-1]}={v:.3f}" for k, v in top2))
+            print(
+                f"      scores: "
+                + ", ".join(f"{k.split('/')[-1]}={v:.3f}" for k, v in top2)
+            )
 
     print("\n=== python argmax per profile (normalised) ===")
     for name, weights in PROFILES.items():
         norms = normalise({m.id: feature_vector(m) for m in models}, weights)
         s = python_scores(norms, weights)
         order = sorted(s.items(), key=lambda kv: -kv[1])
-        print(f"{name}: " + " > ".join(f"{k.split('/')[-1]}({v:.2f})" for k, v in order[:3]))
+        print(
+            f"{name}: "
+            + " > ".join(f"{k.split('/')[-1]}({v:.2f})" for k, v in order[:3])
+        )
 
 
 if __name__ == "__main__":

@@ -112,7 +112,9 @@ class TestRenderTranscript(unittest.TestCase):
 
 class TestRequirements(unittest.TestCase):
     def test_detects_image_part(self):
-        msgs = [ChatMessage(role="user", content=[{"type": "image_url", "image_url": {}}])]
+        msgs = [
+            ChatMessage(role="user", content=[{"type": "image_url", "image_url": {}}])
+        ]
         self.assertTrue(_request_requirements(msgs).needs_image_input)
 
     def test_detects_tool_calls(self):
@@ -137,12 +139,36 @@ class TestRequirements(unittest.TestCase):
 class TestFilterCandidates(unittest.TestCase):
     def _pool(self):
         return [
-            ModelInfo(id="text/only", discount_pct=50, provider="p", input_price=0.001, output_price=0.002,
-                      context_length=8192, input_modalities=["text"], supported_parameters=["tools"]),
-            ModelInfo(id="vision/model", discount_pct=50, provider="p", input_price=0.001, output_price=0.002,
-                      context_length=8192, input_modalities=["text", "image"], supported_parameters=[]),
-            ModelInfo(id="small/ctx", discount_pct=50, provider="p", input_price=0.001, output_price=0.002,
-                      context_length=4096, input_modalities=["text"], supported_parameters=[]),
+            ModelInfo(
+                id="text/only",
+                discount_pct=50,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=8192,
+                input_modalities=["text"],
+                supported_parameters=["tools"],
+            ),
+            ModelInfo(
+                id="vision/model",
+                discount_pct=50,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=8192,
+                input_modalities=["text", "image"],
+                supported_parameters=[],
+            ),
+            ModelInfo(
+                id="small/ctx",
+                discount_pct=50,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+                input_modalities=["text"],
+                supported_parameters=[],
+            ),
         ]
 
     def test_image_filter(self):
@@ -162,7 +188,9 @@ class TestFilterCandidates(unittest.TestCase):
         self.assertEqual(len(kept), 3)
 
     def test_never_returns_empty(self):
-        kept = _filter_candidates(self._pool(), Requirements(needs_tools=True, needs_image_input=True))
+        kept = _filter_candidates(
+            self._pool(), Requirements(needs_tools=True, needs_image_input=True)
+        )
         self.assertEqual(len(kept), 3)  # falls back to the full pool
 
 
@@ -324,7 +352,9 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
         }
         ctx, mock_client = _patched_client(_response(body))
         with ctx, _patch_settings():
-            d = await classify_request([ChatMessage(role="user", content="summarize this")], MODELS)
+            d = await classify_request(
+                [ChatMessage(role="user", content="summarize this")], MODELS
+            )
 
         self.assertEqual(d.model_id, "google/gemini-2.0-flash")
         self.assertEqual(d.reason, "ok")
@@ -365,7 +395,9 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
             m.preference = "none"
             await classify_request([ChatMessage(role="user", content="hi")], MODELS)
         _, kwargs = mock_client.post.call_args
-        self.assertNotIn("Tie-breaker", kwargs["json"]["questions"]["target"]["instructions"])
+        self.assertNotIn(
+            "Tie-breaker", kwargs["json"]["questions"]["target"]["instructions"]
+        )
         self.assertEqual(kwargs["json"]["state"]["preference"], "none")
 
     async def test_http_error(self):

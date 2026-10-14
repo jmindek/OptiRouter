@@ -13,9 +13,7 @@ def model_in_inventory(model: str, models: list[ModelInfo]) -> bool:
     return any(m.id == model for m in models)
 
 
-def handle_model_handoff(
-    model: str, models: list[ModelInfo]
-) -> tuple[str, str | None]:
+def handle_model_handoff(model: str, models: list[ModelInfo]) -> tuple[str, str | None]:
     """Handle when selected model is not in discounted inventory.
 
     Returns (model_to_use, error_detail_or_none).

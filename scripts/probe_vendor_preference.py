@@ -200,7 +200,9 @@ async def main() -> None:
             if name == "baseline" or not vals:
                 continue
             delta = statistics.mean(vals) - bmean
-            verdict = "raises" if delta > 0.02 else "lowers" if delta < -0.02 else "flat"
+            verdict = (
+                "raises" if delta > 0.02 else "lowers" if delta < -0.02 else "flat"
+            )
             print(f"  {name:14s} {delta:+.3f}  {verdict} confidence")
 
     print()
@@ -212,7 +214,9 @@ async def main() -> None:
         top = sorted(counts.items(), key=lambda kv: -kv[1])[:4]
         print(f"{name:14s} " + ", ".join(f"{k}({v})" for k, v in top))
     print()
-    print(f"preferred vendors actually present: {present and [v for v in VENDORS if v in present]}")
+    print(
+        f"preferred vendors actually present: {present and [v for v in VENDORS if v in present]}"
+    )
 
 
 if __name__ == "__main__":

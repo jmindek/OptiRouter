@@ -90,12 +90,8 @@ class Settings(BaseSettings):
     # {langfuse_host}/api/public/ingestion with basic auth. When unset, traces
     # go to the console.
     langfuse_host: str = Field(default="", validation_alias="LANGFUSE_HOST")
-    langfuse_public_key: str = Field(
-        default="", validation_alias="LANGFUSE_PUBLIC_KEY"
-    )
-    langfuse_secret_key: str = Field(
-        default="", validation_alias="LANGFUSE_SECRET_KEY"
-    )
+    langfuse_public_key: str = Field(default="", validation_alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field(default="", validation_alias="LANGFUSE_SECRET_KEY")
 
     # What to record as a trace's input/output in Langfuse.
     #   none      - record nothing (traces show timing and model only)

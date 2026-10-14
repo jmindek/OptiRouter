@@ -42,9 +42,6 @@ _PREFERENCE_TEXT = {
 }
 
 
-
-
-
 @dataclass
 class RoutingDecision:
     """Outcome of a decision-model call."""
@@ -61,7 +58,9 @@ def _format_weights_instruction(weights: dict[str, float]) -> str:
     if not active:
         return ""
     sorted_weights = sorted(active.items(), key=lambda kv: -kv[1])
-    weight_desc = ", ".join(f"{k}: {int(v * 100) if v < 1.0 else v}%" for k, v in sorted_weights)
+    weight_desc = ", ".join(
+        f"{k}: {int(v * 100) if v < 1.0 else v}%" for k, v in sorted_weights
+    )
     return (
         f"User evaluation weights: {weight_desc}. "
         "Weigh these factors when selecting the best candidate for this request."
@@ -119,9 +118,7 @@ def _request_requirements(messages: list, estimated_tokens: int = 0) -> Requirem
     return req
 
 
-def _filter_candidates(
-    models: list[ModelInfo], req: Requirements
-) -> list[ModelInfo]:
+def _filter_candidates(models: list[ModelInfo], req: Requirements) -> list[ModelInfo]:
     """Keep only models that satisfy the request's hard requirements.
 
     Falls back to the unfiltered pool when filtering would leave nothing, so
@@ -229,7 +226,11 @@ def render_transcript(messages: list) -> str:
     """Render the transcript with no truncation (used for size estimates)."""
     parts: list[str] = []
     for m in messages:
-        role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None) or "user"
+        role = (
+            getattr(m, "role", None)
+            or (m.get("role") if isinstance(m, dict) else None)
+            or "user"
+        )
         content = getattr(m, "content", None)
         if content is None and isinstance(m, dict):
             content = m.get("content")
@@ -379,7 +380,9 @@ def _parse_decision(data: dict) -> RoutingDecision:
 
     # The resolved version is reported back in ``model``; log it for attribution.
     resolved = data.get("model")
-    logger.info(f"Decision model selected: {choice} (confidence {confidence:.2f}, resolved {resolved})")
+    logger.info(
+        f"Decision model selected: {choice} (confidence {confidence:.2f}, resolved {resolved})"
+    )
     return RoutingDecision(choice, confidence, "ok")
 
 
