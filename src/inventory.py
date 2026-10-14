@@ -151,6 +151,48 @@ async def _fetch_via_endpoints(
     return discounted
 
 
+# Endpoints below these floors are not trustworthy enough to record numbers
+# from. uptime 1d under 95% means the provider is failing requests; a request
+# count under 100 makes the latency figure noise rather than a measurement.
+MIN_ENDPOINT_UPTIME = 95.0
+MIN_ENDPOINT_REQUESTS = 100
+
+
+def _endpoint_perf(ep: dict) -> dict:
+    """Pull serving facts out of one endpoint entry."""
+    wl = (ep.get("perf_last_30m_by_workload") or {}).get("text_generation") or {}
+    return {
+        "endpoint_name": ep.get("provider_name", "") or "",
+        "latency_p50_ms": _as_float((ep.get("latency_last_30m") or {}).get("p50")),
+        "throughput_p50": _as_float((ep.get("throughput_last_30m") or {}).get("p50")),
+        "uptime_pct": _as_float(ep.get("uptime_last_1d")),
+        "request_count": int(wl.get("request_count", 0) or 0),
+    }
+
+
+def _pick_endpoint(endpoints: list[dict]) -> dict | None:
+    """Choose which endpoint's numbers to record for this model.
+
+    Prefers endpoints with trustworthy perf data, and takes the largest
+    discount among those. Falls back to the largest discount overall when
+    none qualify, so a model is never dropped merely for lacking stats.
+
+    Deliberately does not weigh latency against discount: that trade belongs
+    to the decision model, which needs the facts to make it.
+    """
+    def discount_of(e: dict) -> float:
+        return float((e.get("pricing") or {}).get("discount", 0) or 0)
+
+    healthy = [
+        e
+        for e in endpoints
+        if (_endpoint_perf(e)["latency_p50_ms"] is not None)
+        and (_endpoint_perf(e)["uptime_pct"] or 0) >= MIN_ENDPOINT_UPTIME
+        and _endpoint_perf(e)["request_count"] >= MIN_ENDPOINT_REQUESTS
+    ]
+    return max(healthy or endpoints, key=discount_of)
+
+
 async def fetch_endpoint(
     c: httpx.AsyncClient,
     base_url: str,
@@ -177,12 +219,25 @@ async def fetch_endpoint(
             if not endpoints:
                 return None
 
-            ep = endpoints[0]
+            # Discounts are per-endpoint, and OpenRouter does not order them
+            # by discount. Reading only endpoints[0] silently drops models
+            # whose discount sits on another endpoint (e.g. z-ai/glm-5.3 has
+            # 50% off on endpoint 14 of 43 and 0% on endpoint 0).
+            #
+            # This is inventory, not routing: it chooses which endpoint's
+            # numbers get recorded, not which model serves a request. So it
+            # only refuses to record a broken endpoint's numbers; it does not
+            # weigh latency against discount. That trade is the decision
+            # model's job, and it can only make it if the facts are present.
+            ep = _pick_endpoint(endpoints)
+            if ep is None:
+                return None
             pricing = ep.get("pricing", {})
             discount = pricing.get("discount", 0)
 
             if discount >= settings.min_discount:
                 meta = _meta_from_api(m_meta)
+                perf = _endpoint_perf(ep)
                 return ModelInfo(
                     id=model_id,
                     discount_pct=discount * 100,
@@ -199,6 +254,7 @@ async def fetch_endpoint(
                     intelligence_index=meta["intelligence_index"],
                     coding_index=meta["coding_index"],
                     agentic_index=meta["agentic_index"],
+                    **perf,
                 )
         except httpx.HTTPError as e:
             logger.warning(f"Failed to fetch endpoints for {model_id}: {e}")

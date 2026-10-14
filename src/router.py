@@ -89,6 +89,19 @@ def _rank_candidates(models: list[ModelInfo]) -> list[ModelInfo]:
     return sorted(models, key=lambda m: score_rank[m.id] + discount_rank[m.id])
 
 
+def _format_weights_instruction(weights: dict[str, float]) -> str:
+    """Format user evaluation weights into clear decision guidelines for Jev."""
+    active = {k: v for k, v in weights.items() if v > 0.0}
+    if not active:
+        return ""
+    sorted_weights = sorted(active.items(), key=lambda kv: -kv[1])
+    weight_desc = ", ".join(f"{k}: {int(v * 100) if v < 1.0 else v}%" for k, v in sorted_weights)
+    return (
+        f"User evaluation weights: {weight_desc}. "
+        "Weigh these factors when selecting the best candidate for this request."
+    )
+
+
 def _build_criteria(models: list[ModelInfo]) -> dict[str, str]:
     """Build the ``choice`` criteria: candidate id -> capability hint.
 
@@ -117,7 +130,8 @@ def _request_requirements(messages: list, estimated_tokens: int = 0) -> Requirem
     These filter the candidate pool before the decision model sees it, so it
     only ranks models that can actually serve the request.
     """
-    req = Requirements(min_context=estimated_tokens)
+    context_floor = max(estimated_tokens, settings.min_context_length)
+    req = Requirements(min_context=context_floor)
     for m in messages:
         content = getattr(m, "content", None)
         if content is None and isinstance(m, dict):
@@ -192,20 +206,33 @@ def _describe_model(m: ModelInfo) -> str:
         facts.append(f"{m.context_length} token context")
 
     # Benchmark scores are the real capability signal; without them every
-    # candidate reads the same.
-    scores: list[str] = []
-    if m.intelligence_index is not None:
-        scores.append(f"intelligence {m.intelligence_index:.0f}")
-    if m.coding_index is not None:
-        scores.append(f"coding {m.coding_index:.0f}")
-    if m.agentic_index is not None:
-        scores.append(f"agentic {m.agentic_index:.0f}")
-    if scores:
-        facts.append(", ".join(scores))
+    # candidate reads the same. Treat missing/null scores explicitly as 0.
+    scores: list[str] = [
+        f"intelligence {m.intelligence_index or 0.0:.0f}",
+        f"coding {m.coding_index or 0.0:.0f}",
+        f"agentic {m.agentic_index or 0.0:.0f}",
+    ]
+    facts.append(", ".join(scores))
 
     facts.append(f"{m.discount_pct:.0f}% off")
     # Effective price is the tie-breaker the cost preference acts on.
     facts.append(f"${m.input_price * 1e6:.2f}/Mtok in")
+
+    # Serving facts describe the provider, not the model. The same model is
+    # often served by many providers at different speeds and reliabilities,
+    # so without these the decision cannot tell a fast endpoint from a broken
+    # one, and price is the only comparable signal it has.
+    served: list[str] = []
+    if m.endpoint_name:
+        served.append(f"served by {m.endpoint_name}")
+    if m.latency_p50_ms is not None:
+        served.append(f"{m.latency_p50_ms:.0f}ms p50")
+    if m.throughput_p50 is not None:
+        served.append(f"{m.throughput_p50:.0f} tok/s")
+    if m.uptime_pct is not None:
+        served.append(f"{m.uptime_pct:.0f}% uptime")
+    if served:
+        facts.append(", ".join(served))
 
     return "; ".join(facts)
 
@@ -321,12 +348,15 @@ async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDe
         return RoutingDecision(None, 0.0, "no_models")
 
     preference = _PREFERENCE_TEXT.get(settings.preference, "")
+    weights_guidance = _format_weights_instruction(settings.weights)
 
     instructions = (
         "Read the request below, then choose which candidate model should "
         "serve it. Match the candidate's strengths to what the request "
         "actually needs."
     )
+    if weights_guidance:
+        instructions += f" {weights_guidance}"
     if preference:
         instructions += f" Tie-breaker: {preference}."
     instructions += " Answer with one of the supplied options."
@@ -336,6 +366,7 @@ async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDe
         "state": {
             "request": _render_state(messages),
             "preference": preference or "none",
+            "weights": settings.weights,
         },
         "questions": {
             "target": {

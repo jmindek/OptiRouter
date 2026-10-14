@@ -62,6 +62,15 @@ CLOUD_SETTINGS = {
     "mode": "cloud",
     "min_confidence": 0.30,
     "preference": "cost",
+    "min_context_length": 131072,
+    "weights": {
+        "discount": 0.4,
+        "latency": 0.2,
+        "uptime": 0.2,
+        "coding_index": 0.2,
+        "intelligence_index": 0.0,
+        "agentic_index": 0.0,
+    },
 }
 
 

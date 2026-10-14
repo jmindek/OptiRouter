@@ -46,3 +46,11 @@ class ModelInfo(BaseModel):
     intelligence_index: float | None = None
     coding_index: float | None = None
     agentic_index: float | None = None
+    # Serving-endpoint facts, from the endpoint the router will actually use.
+    # These describe the provider, not the model: the same model can be served
+    # by many providers at different prices, speeds and reliabilities.
+    endpoint_name: str = ""
+    latency_p50_ms: float | None = None
+    throughput_p50: float | None = None
+    uptime_pct: float | None = None
+    request_count: int = 0

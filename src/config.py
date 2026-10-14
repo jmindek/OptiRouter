@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     # Discount threshold (0.0-1.0)
-    min_discount: float = Field(default=0.50, validation_alias="ROUTER_MIN_DISCOUNT")
+    min_discount: float = Field(default=0.25, validation_alias="ROUTER_MIN_DISCOUNT")
 
     # Minimum decision-model confidence (0.0-1.0) to accept a routing pick.
     # Below this the router abstains and uses the best available model.
@@ -53,6 +53,25 @@ class Settings(BaseSettings):
     # Model handoff when selected model falls off discount list
     model_handoff: str = Field(
         default="next_best", validation_alias="ROUTER_MODEL_HANDOFF"
+    )
+
+    # Minimum context length in tokens
+    min_context_length: int = Field(
+        default=131072, validation_alias="ROUTER_MIN_CONTEXT_LENGTH"
+    )
+
+    # Feature weights for model decision evaluation
+    # Accepted format: string "discount=0.4,latency=0.2,..." or dict
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "discount": 0.4,
+            "latency": 0.2,
+            "uptime": 0.2,
+            "coding_index": 0.2,
+            "intelligence_index": 0.0,
+            "agentic_index": 0.0,
+        },
+        validation_alias="ROUTER_WEIGHTS",
     )
 
     # Cache
