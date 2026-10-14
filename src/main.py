@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import time
-import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -14,7 +14,7 @@ from src.handoff import handle_model_handoff, model_in_inventory
 from src.inventory import fetch_discounted_models, load_cache, save_cache
 from src.models import ChatCompletionRequest
 from src.rate_limiter import rate_limiter
-from src.router import classify_request
+from src.router import RoutingDecision, classify_request, render_transcript
 from src.telemetry import (
     errors_total,
     handoff_events,
@@ -71,25 +71,111 @@ async def refresh_inventory():
             models = await fetch_discounted_models()
             save_cache(models)
             logger.info(f"Inventory refreshed: {len(models)} models")
-        except BaseException:  # noqa: BLE001
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
             inventory_errors.add(1)
-            logger.error("Inventory refresh failed")
+            logger.error(f"Inventory refresh failed: {e}")
+
+
+def _build_forward_body(messages: list, model: str, stream: bool, request: ChatCompletionRequest) -> dict:
+    """Build the JSON body to forward to OpenRouter, preserving all original fields."""
+    msg_list = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages]
+    body: dict = {"model": model, "messages": msg_list, "stream": stream}
+    if request.temperature is not None:
+        body["temperature"] = request.temperature
+    if request.max_tokens is not None:
+        body["max_tokens"] = request.max_tokens
+    if request.tools is not None:
+        body["tools"] = request.tools
+    if request.tool_choice is not None:
+        body["tool_choice"] = request.tool_choice
+    if request.logprobs is not None:
+        body["logprobs"] = request.logprobs
+    if request.top_logprobs is not None:
+        body["top_logprobs"] = request.top_logprobs
+    if request.stop is not None:
+        body["stop"] = request.stop
+    if request.presence_penalty is not None:
+        body["presence_penalty"] = request.presence_penalty
+    if request.frequency_penalty is not None:
+        body["frequency_penalty"] = request.frequency_penalty
+    if request.response_format is not None:
+        body["response_format"] = request.response_format
+    if request.seed is not None:
+        body["seed"] = request.seed
+    if request.user is not None:
+        body["user"] = request.user
+    return body
+
+
+def _record_trace_content(
+    span, messages: list, model: str, decision: "RoutingDecision | None"
+) -> None:
+    """Attach trace input/output to a span, per the configured policy.
+
+    Prompts are user content, so what gets recorded is user-configurable:
+    `ROUTER_TRACE_INPUT` is `none`, `decision`, `truncated` (default) or `full`.
+    The routing decision is router metadata and is controlled separately by
+    `ROUTER_TRACE_ROUTING_DETAIL`.
+    """
+    policy = settings.trace_input
+
+    if policy == "full":
+        span.set_attribute("input", render_transcript(messages))
+    elif policy == "truncated":
+        span.set_attribute("input", render_transcript(messages)[: settings.trace_input_chars])
+    elif policy == "decision":
+        pass  # no prompt content, decision only
+
+    if settings.trace_routing_detail and decision is not None:
+        parts = [f"model={model}", f"reason={decision.reason}"]
+        if decision.confidence:
+            parts.append(f"confidence={decision.confidence:.2f}")
+        span.set_attribute("output", " ".join(parts))
+
+
+def _apply_rate_limit_policy(
+    status_code: int, model: str, attempt: int, max_retries: int
+) -> bool:
+    """Shared 429 policy for both the streaming and non-streaming paths.
+
+    Records the rate limit and decides whether to retry. Both transports call
+    this so the backoff policy cannot drift between them.
+
+    Returns True when the caller should retry (after the backoff sleep),
+    False when the response is not rate limited and the caller should proceed.
+    Raises HTTPException(429) when attempts are exhausted.
+    """
+    if status_code != 429:
+        return False
+
+    rate_limiter.record_429(model)
+    rate_limit_events.add(1, {"model": model})
+    if attempt < max_retries - 1:
+        return True
+    raise HTTPException(status_code=429, detail="Rate limited")
 
 
 async def forward_to_openrouter(
-    messages: list, model: str, stream: bool = False
+    messages: list, model: str, stream: bool = False, request: ChatCompletionRequest | None = None
 ) -> dict | StreamingResponse:
-    # Convert ChatMessage objects to dicts for JSON serialization
-    msg_list = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages]
-    """Forward request to OpenRouter with reactive rate limiting."""
+    """Forward request to OpenRouter with reactive rate limiting.
+
+    Preserves all original request fields (temperature, tools, logprobs, etc.)
+    and passes through OpenRouter response directly for non-streaming.
+    """
+    if request is None:
+        request = ChatCompletionRequest(messages=messages, stream=stream)
+
     api_base = settings.inventory_url.removesuffix("/v1").rstrip("/")
     api_key = settings.openrouter_api_key
+    body = _build_forward_body(messages, model, stream, request)
 
     max_retries = 3
     for attempt in range(max_retries):
         await rate_limiter.wait_if_needed(model)
 
-        # Build headers - only include Authorization if key is present
         headers = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -101,15 +187,13 @@ async def forward_to_openrouter(
                         "POST",
                         f"{api_base}/v1/chat/completions",
                         headers=headers,
-                        json={"model": model, "messages": msg_list, "stream": True},
+                        json=body,
                     ) as resp:
-                        if resp.status_code == 429:
-                            rate_limiter.record_429(model)
-                            rate_limit_events.add(1, {"model": model})
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(2**attempt)
-                                continue
-                            raise HTTPException(status_code=429, detail="Rate limited")
+                        if _apply_rate_limit_policy(
+                            resp.status_code, model, attempt, max_retries
+                        ):
+                            await asyncio.sleep(2**attempt)
+                            continue
                         resp.raise_for_status()
                         rate_limiter.clear(model)
 
@@ -125,17 +209,17 @@ async def forward_to_openrouter(
                     resp = await client.post(
                         f"{api_base}/v1/chat/completions",
                         headers=headers,
-                        json={"model": model, "messages": msg_list, "stream": False},
+                        json=body,
                     )
-                    if resp.status_code == 429:
-                        rate_limiter.record_429(model)
-                        rate_limit_events.add(1, {"model": model})
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(2**attempt)
-                            continue
-                        raise HTTPException(status_code=429, detail="Rate limited")
+                    if _apply_rate_limit_policy(
+                        resp.status_code, model, attempt, max_retries
+                    ):
+                        await asyncio.sleep(2**attempt)
+                        continue
                     resp.raise_for_status()
                     rate_limiter.clear(model)
+                    # Pass through OpenRouter response directly — preserves tool calls,
+                    # logprobs, and full OpenAI schema.
                     return resp.json()
 
             except httpx.HTTPStatusError:
@@ -157,12 +241,10 @@ async def chat_completions(request: ChatCompletionRequest):
     """Main routing endpoint."""
     start = time.time()
     model = "unknown"
+    decision: RoutingDecision | None = None
     with tracer.start_as_current_span("chat_completions") as span:
         try:
             messages = request.messages
-            last_msg = messages[-1] if messages else None
-            content = last_msg.content if last_msg else ""
-            last_message = content if isinstance(content, str) else ""
 
             models = load_cache()
             if not models:
@@ -170,10 +252,20 @@ async def chat_completions(request: ChatCompletionRequest):
                     raise HTTPException(status_code=503, detail="No models available")
                 model = settings.static_fallback
             else:
-                model = await classify_request(last_message, None, models)
-                if not model:
-                    if settings.fallback_mode == "halt":
-                        raise HTTPException(status_code=503, detail="Routing failed")
+                decision = await classify_request(messages, models)
+                if decision.model_id:
+                    model = decision.model_id
+                elif decision.reason == "low_confidence":
+                    # Decision model answered but was not sure enough: use the
+                    # best available discounted model rather than a fixed one.
+                    model = models[0].id
+                    logger.info(
+                        f"Decision abstained (confidence {decision.confidence:.2f}), "
+                        f"using best available: {model}"
+                    )
+                elif settings.fallback_mode == "halt":
+                    raise HTTPException(status_code=503, detail="Routing failed")
+                else:
                     model = settings.static_fallback
 
             # Check if selected model is still discounted
@@ -185,28 +277,15 @@ async def chat_completions(request: ChatCompletionRequest):
 
             model_selections.add(1, {"model": model})
             span.set_attribute("router.model", model)
+            _record_trace_content(span, messages, model, decision)
 
-            result = await forward_to_openrouter(messages, model, request.stream)
+            result = await forward_to_openrouter(messages, model, request.stream, request)
             if isinstance(result, StreamingResponse):
                 return result
 
-            return {
-                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": result["choices"][0]["message"]["content"],
-                        },
-                        "finish_reason": result["choices"][0].get("finish_reason"),
-                    }
-                ],
-                "usage": result.get("usage", {}),
-            }
+            # Non-streaming: pass through OpenRouter response directly.
+            # Preserves tool_calls, logprobs, and full OpenAI schema.
+            return result
         except HTTPException:
             raise
         except Exception as e:
@@ -221,7 +300,26 @@ async def chat_completions(request: ChatCompletionRequest):
 
 @app.get("/healthz")
 async def health():
-    return {"status": "ok"}
+    """Health check with inventory freshness info."""
+    cache_path = Path(settings.cache_file)
+    cache_info = {}
+    if cache_path.exists():
+        stat = cache_path.stat()
+        age_s = time.time() - stat.st_mtime
+        cache_info = {
+            "exists": True,
+            "age_seconds": round(age_s, 0),
+            "age_human": f"{age_s/3600:.1f}h" if age_s > 3600 else f"{age_s/60:.0f}m",
+        }
+    else:
+        cache_info = {"exists": False}
+
+    models = load_cache()
+    return {
+        "status": "ok",
+        "cache": cache_info,
+        "cached_models": len(models),
+    }
 
 
 if __name__ == "__main__":

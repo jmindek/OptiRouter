@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Discount Model Router — routes AI inference requests to OpenRouter models that have active discounts (≥50% by default). Uses a "System One" model (e.g., `upstage/solar-decide`) to classify incoming requests into categories and select the best discounted model.
+Discount Model Router — routes AI inference requests to OpenRouter models that have active discounts (≥50% by default). Uses a System One decision model (`typesafe/jev-1.13`) to pick the best discounted candidate for each request.
 
 **Target API**: OpenAI-compatible (`/v1/chat/completions`). Compatible with OpenRouter.
 
@@ -13,19 +13,25 @@ Discount Model Router — routes AI inference requests to OpenRouter models that
 ```
 Client → FastAPI (port 8080) → Router Logic → OpenRouter API
                               │
-                              ├── Classify request (System One model)
-                              ├── Select discounted model from inventory
+                              ├── Load discounted pool from cache
+                              ├── Derive request requirements (image / tools / context)
+                              ├── Filter + cap candidates (blended ranking)
+                              ├── Ask decision model to pick (Decisions API)
                               ├── Forward request (with rate limiting)
                               └── Return response (stream or non-stream)
                               │
-                              └── Inventory refresh (cron, daily at 2am UTC)
-                                  ├── GET /api/v1/models (all models)
+                              └── Inventory refresh (cron, hourly at :00)
+                                  ├── GET /api/v1/models (all models, metadata)
                                   └── GET /api/v1/models/{id}/endpoints (discount info)
 ```
 
 ### Key Insight: Discount Data Source
 
-The `/models` endpoint does NOT include discount info. Discount is only in `/models/{id}/endpoints`. This means ~400 endpoint calls per refresh cycle (one per model). Confirmed via live API calls.
+The `/models` endpoint does NOT include discount info. Discount is only in `/models/{id}/endpoints`, so the whole catalogue is swept (one call per model) to find discounted ones. Measured live: all 462 models in ~4s at concurrency 10, with no rate limiting. OpenRouter publishes no per-endpoint RPM; only free-model limits (which do not apply here) and a general DDoS threshold.
+
+### Key Insight: The Decision Model Is Not a Chat Model
+
+`typesafe/jev-1.13` does not generate text. `/v1/chat/completions` against it returns 400. It is called through the OpenRouter Decisions API with `state` plus typed `questions`, and returns typed `answers` with a probability distribution and a calibrated `confidence`. Note `confidence` is NOT the top probability — it summarises the whole distribution. See README for the full contract.
 
 ---
 
@@ -33,46 +39,64 @@ The `/models` endpoint does NOT include discount info. Discount is only in `/mod
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/main.py` | 202 | FastAPI app, lifespan, routing endpoint, forward/stream logic, URL target resolution |
-| `src/router.py` | 128 | Category classification, model selection, System One integration |
-| `src/inventory.py` | 102 | Fetch discounted models, cache save/load, client lifecycle management |
-| `src/config.py` | 57 | Pydantic settings, env var mapping |
-| `src/models.py` | 24 | Pydantic models: `ChatCompletionRequest`, `ModelInfo`, `ChatMessage` |
-| `src/rate_limiter.py` | 49 | Reactive rate limiting (429 handling, backoff tracking) |
-| `tests/test_regression_p0.py` | 124 | Regression unit tests for P0 fixes (inventory client context, URL formatting, streaming lifecycle) |
-| `tests/test_router.py` | 78 | Router unit tests |
-| `tests/test_inventory.py` | 38 | Cache save/load tests |
-| `tests/test_models.py` | 24 | Model validation tests |
-| `tests/test_rate_limiter.py` | 29 | Rate limiter tests |
-| `tests/conftest.py` | 5 | Test path setup |
-| `.env.example` | 42 | Environment variable template |
-| `Dockerfile` | 19 | Container build |
-| `docker-compose.yml` | 15 | Docker compose (router only) |
-| `pyproject.toml` | 28 | Project config, dependencies |
+| `src/main.py` | 282 | FastAPI app, lifespan, routing endpoint, forward/stream logic, healthz |
+| `src/router.py` | 429 | Request requirements, candidate filter + ranking, decision-model call, response parsing |
+| `src/inventory.py` | 224 | Discount sweep, non-chat filtering, cache save/load, client injection |
+| `src/config.py` | 77 | Pydantic settings, env var mapping |
+| `src/models.py` | 48 | Pydantic models: `ChatCompletionRequest`, `ModelInfo`, `ChatMessage` |
+| `src/handoff.py` | 36 | Handoff when a chosen model falls off the discount list |
+| `src/rate_limiter.py` | 48 | Reactive rate limiting (429 handling, backoff tracking) |
+| `src/telemetry.py` | 101 | OpenTelemetry metrics and traces, exporter wiring |
+| `src/langfuse_exporter.py` | 159 | SpanProcessor translating spans to Langfuse's native ingestion format |
+| `tests/test_langfuse_exporter.py` | 152 | Langfuse export: translation, auth, never-raise |
+| `tests/test_router.py` | 418 | Router: requirements, filtering, ranking, decision parsing |
+| `tests/test_inventory_sweep.py` | 183 | Sweep integration, non-chat filtering, cache fallback |
+| `tests/test_regression_p0.py` | 171 | Regression tests for P0 fixes |
+| `tests/test_model_handoff.py` | 65 | Handoff modes |
+| `tests/test_inventory.py` | 37 | Cache save/load |
+| `tests/test_rate_limit_policy.py` | 54 | Shared 429 policy (both transports) |
+| `tests/test_rate_limiter.py` | 28 | Rate limiter |
+| `tests/test_models.py` | 23 | Model validation |
+| `tests/conftest.py` | 4 | Test path setup |
+| `.env.example` | 56 | Environment variable template |
+| `scripts/probe_decisions.py` | — | Live probe of the Decisions API (manual verification) |
+| `Dockerfile` | 21 | Container build |
+| `docker-compose.yml` | 10 | Docker compose (router only) |
+| `pyproject.toml` | 30 | Project config, dependencies |
+
+No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py` was deleted). `playwright` is no longer a dependency.
 
 ---
 
 ## Key Components
 
 ### 1. Inventory (`src/inventory.py`)
-- Fetches all models from OpenRouter `/models` endpoint.
-- Iterates through models while keeping `httpx.AsyncClient` context open to fetch `/models/{id}/endpoints` for discount info.
-- Accepts optional `client` parameter for easy dependency injection in tests.
+- Sweeps `/models` then every `/models/{id}/endpoints` concurrently (`ENDPOINT_CONCURRENCY = 10`) to find discounted models.
+- `_is_chat_capable()` drops models that cannot serve a chat completion: no text output (audio/video/image/embedding) or no context window (placeholder rows such as `docs/quickstart`).
+- `_meta_from_api()` captures capability hints: provider, name, description, input/output modalities, supported parameters, and `artificial_analysis` benchmark scores (`intelligence_index`, `coding_index`, `agentic_index`).
 - Filters by `min_discount` threshold (default 50%).
-- Saves to `data/models.json` cache file.
-- Refreshed via cron scheduler (default: daily at 2am UTC).
+- Accepts optional `client` parameter for dependency injection in tests.
+- Falls back to the cached inventory when the sweep fails or finds nothing.
+- Saves to `data/models.json`. Refreshed hourly by default (see `ROUTER_REFRESH_CRON`).
 
 ### 2. Router (`src/router.py`)
-- **Categories**: `coding`, `reasoning`, `writing`, `chat`, `analysis`, `creative`
-- `build_category_map()`: Maps each category to the best discounted model (sorted by discount %, then price)
-- `classify_request()`: Sends request to System One model for classification
-- `_category_to_model()`: Maps classified category to model ID
-- `CATEGORY_MODEL_MAP`: Global map updated on each classification
+- `_request_requirements()`: derives hard requirements from the transcript — image parts, tool calls, and an estimated context floor (`_estimate_tokens`, measured on the untruncated text).
+- `_filter_candidates()`: keeps only models satisfying those requirements; falls back to the full pool rather than returning nothing.
+- `_rank_candidates()`: blends benchmark rank and discount rank so the capped pool spans cheap-weak to strong-expensive.
+- `_build_criteria()`: builds the `choice` question criteria — one option per candidate, capped at `MAX_CANDIDATES` (5).
+- `_render_state()`: renders the transcript verbatim; `_truncate_middle()` caps it so an oversized prompt cannot trigger a `max_tokens_exceeded` 400.
+- `classify_request()`: posts `{model, state, questions}` to `POST /api/alpha/decisions` and returns `RoutingDecision(model_id, confidence, reason)`.
+- `_parse_decision()`: validates the typed answer; a missing or malformed answer is an error, never approval. Abstains below `ROUTER_MIN_CONFIDENCE`.
 
 ### 3. Main App (`src/main.py`)
-- FastAPI app with `/v1/chat/completions` endpoint.
-- `forward_to_openrouter()`: Proxies requests to OpenRouter with reactive rate limiting. Supports streaming and non-streaming responses.
-- Fallback: static model or 503 if no models available.
+- FastAPI app with `/v1/chat/completions`.
+- `forward_to_openrouter()`: proxies to OpenRouter with reactive rate limiting, preserving all request fields (temperature, tools, logprobs, ...) and passing the non-stream response through unchanged.
+- On a `low_confidence` decision, uses the best available discounted model instead of the static fallback.
+- `/healthz` reports cache age and model count.
+- Fallback: static model or 503 when no models are available.
+
+### 4. Handoff (`src/handoff.py`)
+- `model_in_inventory()` / `handle_model_handoff()`: when the chosen model is no longer discounted, `stop` (400), `next_best` (switch), or `keep_current` (proceed). Fires on the request after the pool refresh drops the model.
 
 ### 4. Rate Limiter (`src/rate_limiter.py`)
 - Reactive: only activates on 429 responses.
@@ -88,15 +112,20 @@ The `/models` endpoint does NOT include discount info. Discount is only in `/mod
 ## Current State
 
 ### Tests
-- **14 tests, all passing** (including 3 P0 regression tests in `test_regression_p0.py`).
-- Coverage: router logic, inventory cache & client lifecycle, model validation, rate limiter, URL target resolution, and streaming connection lifecycle.
+- **76 tests, all passing.** `uv run pytest`.
+- Coverage: router (requirements, filtering, ranking, decision parsing), inventory sweep (non-chat filtering, cache fallback), cache save/load, model validation, rate limiter, handoff modes, and P0 regressions.
+- `uv run pyright src/` reports 0 errors.
 
 ### Git History & Status
 - **Active Branch**: `feature/router`
-- **Recent P0 Fixes**:
-  - Fixed closed `httpx.AsyncClient` bug during inventory endpoint fetching (`src/inventory.py`).
-  - Fixed streaming generator premature context manager exit (`src/main.py`).
-  - Fixed `/v1` URL duplication and API key assignment logic (`src/main.py`).
+- **Recent work**:
+  - Replaced a guessed decision-model integration with the live-verified OpenRouter Decisions API contract (decision model, not chat).
+  - Removed the keyword task-tagger; the transcript is sent verbatim.
+  - Added request-derived filtering (image/tools/context) and blended candidate ranking; capped the pool at 5.
+  - Captured `artificial_analysis` benchmark scores into the candidate descriptions.
+  - Replaced the Playwright scraper with a browserless `/endpoints` sweep; refresh is now hourly.
+  - Forward all request fields and pass the non-stream response through unchanged.
+  - `/healthz` reports cache age and model count.
 
 ---
 
@@ -107,36 +136,34 @@ The `/models` endpoint does NOT include discount info. Discount is only in `/mod
 2. **[FIXED] Broken Streaming Lifecycle** — `event_generator` now manages connection closing in a `finally` block upon completion.
 3. **[FIXED] Base URL `/v1` Duplication & API Key Assignment** — Added `forward_to_openrouter()` helper to strip trailing slashes/v1 duplicates and forward to OpenRouter.
 
+### Resolved (later iterations)
+4. **Inventory refresh concurrency** — `asyncio.Semaphore(10)`; whole catalogue in ~4s.
+5. **Non-streaming response wrapping** — response is passed through unchanged, preserving tool calls, logprobs, and the full OpenAI schema.
+6. **Category keyword map** — removed. The decision model picks from the real candidate pool.
+7. **Inventory health check** — `/healthz` reports cache age and model count.
+8. **Request field passthrough** — temperature, max_tokens, tools, logprobs and the rest are forwarded.
+9. **Playwright scraper** — deleted; the `/endpoints` sweep replaces it.
+10. **Stream/non-stream duplication** — the 429 retry/backoff policy was duplicated across both transports; it now lives in `_apply_rate_limit_policy()` with a shared test.
+
 ### Pending Issues & Open Questions
 
-1. **Inventory Refresh Bottleneck (400+ API Calls)**
-   - **Problem**: Fetching `/models/{id}/endpoints` for every model sequentially.
-   - **Recommendation**: Add concurrency limit via `asyncio.Semaphore(10)` to speed up refresh.
-
-2. **`forward_to_openrouter` Stream/Non-Stream Duplication**
+1. **`forward_to_openrouter` Stream/Non-Stream Duplication**
    - Stream and non-stream logic can be further consolidated.
 
-3. **`main.py` Non-Streaming Response Wrapping**
-   - Non-streaming response is manually wrapped. Returning OpenRouter response dict directly will preserve tool calling, logprobs, and full OpenAI schema.
+2. **Validate-on-forward (deferred)** — the pool is up to 1h stale, so an in-flight model's discount can change unnoticed within that window. A per-model `/endpoints` check with a short TTL would catch it for ~1–2s/day. Deferred by choice; handoff covers the next-request case.
 
-4. **Category Map Keyword Config**
-   - Category keywords in `build_category_map()` are currently hardcoded.
+3. **RateLimiter lock scope** — `wait_if_needed` holds a lock across the wait, which can block concurrent requests for unthrottled models.
 
-5. **Inventory Health Check**
-   - `/healthz` returns static `"ok"` without reporting cache freshness or age.
+4. **Dockerfile dependency list** — the Dockerfile installs dependencies by name rather than from `pyproject.toml`, so the two can drift.
 
 ---
 
 ## Active Requirements for Next Iteration
 
-### High Priority
-1. **Add concurrency limit to inventory fetch** — Use `asyncio.Semaphore(10)` to accelerate model endpoint fetching.
-2. **Fix RateLimiter lock scope** — Prevent `wait_if_needed` lock from blocking concurrent requests for unthrottled models.
-3. **Align Dockerfile Python version** — Set Dockerfile base image to Python 3.13.
-
 ### Medium Priority
-4. **Add inventory freshness check** — Report cache age in `/healthz`.
-5. **Preserve full OpenAI schema** — Pass through OpenRouter JSON directly for non-streaming completions.
+1. **Fix RateLimiter lock scope** — do not hold the lock across `asyncio.sleep`.
+2. **Build dependencies from `pyproject.toml`** in the Dockerfile so the two cannot drift.
+3. **Transcript compression (deferred)** — an oversized transcript is truncated from the middle before it reaches the decision model (`_truncate_middle`). A smarter reduction is unexplored: whether a compressed transcript still routes to the same model.
 
 ---
 

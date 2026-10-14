@@ -8,15 +8,27 @@ from fastapi.responses import StreamingResponse
 from src.config import settings
 from src.inventory import fetch_discounted_models
 from src.main import forward_to_openrouter
+from src.models import ChatCompletionRequest
 
 
 class TestP0Regressions(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_discounted_models_concurrent(self):
         """Test concurrent endpoint fetching with semaphore."""
+        import tempfile
+        from pathlib import Path
+
         models_payload = {
             "data": [
-                {"id": "model-1"},
-                {"id": "model-2"},
+                {
+                    "id": "model-1",
+                    "architecture": {"output_modalities": ["text"]},
+                    "context_length": 4096,
+                },
+                {
+                    "id": "model-2",
+                    "architecture": {"output_modalities": ["text"]},
+                    "context_length": 4096,
+                },
             ]
         }
         ep1_payload = {
@@ -69,7 +81,14 @@ class TestP0Regressions(unittest.IsolatedAsyncioTestCase):
         mock_client = MagicMock(spec=httpx.AsyncClient)
         mock_client.get = AsyncMock(side_effect=mock_get)
 
-        discounted = await fetch_discounted_models(client=mock_client)
+        # Isolate the cache: this call saves the discounted models, and must
+        # never touch the working data/models.json.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "src.inventory.settings.cache_file",
+                str(Path(tmp_dir) / "models.json"),
+            ):
+                discounted = await fetch_discounted_models(client=mock_client)
         self.assertEqual(len(discounted), 1)
         self.assertEqual(discounted[0].id, "model-1")
         self.assertEqual(discounted[0].discount_pct, 60.0)
@@ -102,6 +121,7 @@ class TestP0Regressions(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "hi"}],
                 model="model-1",
                 stream=False,
+                request=ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}]),
             )
             assert captured_url is not None
             self.assertIn("/v1/chat/completions", captured_url)
@@ -144,6 +164,7 @@ class TestP0Regressions(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "hi"}],
                 model="model-1",
                 stream=True,
+                request=ChatCompletionRequest(messages=[{"role": "user", "content": "hi"}], stream=True),
             )
 
             response = cast(StreamingResponse, response)

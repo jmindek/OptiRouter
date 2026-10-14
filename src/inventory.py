@@ -7,91 +7,107 @@ import httpx
 
 from src.config import settings
 from src.models import ModelInfo
-from src.scraper import scrape_discounted_models
 
 logger = logging.getLogger(__name__)
 
 ENDPOINT_CONCURRENCY = 10
 
+# Models whose output is not text cannot serve chat completions. Discounts
+# also appear on audio/video/embedding models, so drop them.
+_TEXT_OUTPUT = {"text"}
+
+# Suffixes for models that exist but are not callable through
+# /chat/completions. OpenRouter rejects these with 404, e.g.
+# "google/gemini-4-argon:batch cannot be used with the chat/completions
+# endpoint". Batch variants look discounted and chat-capable otherwise, so
+# they must be dropped explicitly.
+_NON_SYNC_SUFFIXES = (":batch", ":free")
+
+
+def _is_chat_capable(m: ModelInfo) -> bool:
+    """True when the model can serve a chat completion.
+
+    Rejects: no text output (audio, video, image, embeddings), models that
+    exist but are not callable through /chat/completions (batch/free
+    variants), and the docs/placeholder rows OpenRouter lists without any real
+    modality.
+    """
+    if m.id.endswith(_NON_SYNC_SUFFIXES):
+        return False
+    if not m.output_modalities:
+        return False
+    if not _TEXT_OUTPUT.issubset(set(m.output_modalities)):
+        return False
+    # Junk rows (e.g. "docs/quickstart") carry no context window.
+    if m.context_length <= 0:
+        return False
+    return True
+
+
+def _meta_from_api(m_meta: dict) -> dict:
+    """Pull capability hints out of one /models entry."""
+    arch = m_meta.get("architecture", {}) or {}
+    top_prov = m_meta.get("top_provider", {})
+    supported = m_meta.get("supported_parameters", []) or []
+    aa = (m_meta.get("benchmarks") or {}).get("artificial_analysis") or {}
+    return {
+        "provider": top_prov.get("name", "") if isinstance(top_prov, dict) else "",
+        "name": m_meta.get("name", "") or "",
+        "description": m_meta.get("description", "") or "",
+        "input_modalities": list(arch.get("input_modalities", []) or []),
+        "output_modalities": list(arch.get("output_modalities", []) or []),
+        "supported_parameters": list(supported),
+        "context_length": int(m_meta.get("context_length", 0) or 0),
+        "intelligence_index": _as_float(aa.get("intelligence_index")),
+        "coding_index": _as_float(aa.get("coding_index")),
+        "agentic_index": _as_float(aa.get("agentic_index")),
+    }
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
 
 async def fetch_discounted_models(client: httpx.AsyncClient | None = None) -> list[ModelInfo]:
-    """Fetch all models from OpenRouter, filter by discount threshold.
+    """Fetch all models from OpenRouter and keep those with an active discount.
 
-    When called without a custom client, uses Playwright to scrape models with discount
-    badges from /models?order=discount-high-to-low and enriches them with a single /models API call.
-    Falls back to cached inventory or per-endpoint queries if scraping fails.
+    Discounts are not in /models: they only appear in each model's
+    /models/{id}/endpoints entry. The full catalogue is therefore swept
+    concurrently (see ENDPOINT_CONCURRENCY). Measured: all 462 models in ~4s at
+    concurrency 10, with no rate limiting.
+
+    Falls back to the cached inventory when the sweep fails or finds nothing,
+    so a provider hiccup never leaves the router with an empty pool.
     """
     base_url = settings.inventory_url.rstrip("/")
     headers = {"Authorization": f"Bearer {settings.openrouter_api_key}"}
 
-    # If a custom client is supplied (e.g. in unit tests), use the endpoint-query method
-    if client is not None:
-        return await _fetch_via_endpoints(client, base_url, headers)
-
-    # 1. Try Playwright scraper + single /models API metadata call
     try:
-        scraped_discounts = await scrape_discounted_models()
-        if scraped_discounts:
+        if client is not None:
+            found = await _fetch_via_endpoints(client, base_url, headers)
+        else:
             async with httpx.AsyncClient(timeout=30.0) as c:
-                resp = await c.get(f"{base_url}/models", headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+                found = await _fetch_via_endpoints(c, base_url, headers)
 
-            models_by_id = {m["id"]: m for m in data.get("data", []) if m.get("id")}
-            min_disc_pct = settings.min_discount * 100
-
-            discounted: list[ModelInfo] = []
-            for mid, disc_pct in scraped_discounts.items():
-                if disc_pct < min_disc_pct:
-                    continue
-
-                m_meta = models_by_id.get(mid, {})
-                pricing = m_meta.get("pricing", {})
-                top_prov = m_meta.get("top_provider", {})
-
-                try:
-                    in_price = float(pricing.get("prompt", 0) or 0)
-                except (ValueError, TypeError):
-                    in_price = 0.0
-
-                try:
-                    out_price = float(pricing.get("completion", 0) or 0)
-                except (ValueError, TypeError):
-                    out_price = 0.0
-
-                discounted.append(
-                    ModelInfo(
-                        id=mid,
-                        discount_pct=disc_pct,
-                        provider=top_prov.get("name", "") if isinstance(top_prov, dict) else "",
-                        input_price=in_price,
-                        output_price=out_price,
-                        context_length=int(m_meta.get("context_length", 0) or 0),
-                    )
-                )
-
-            # Sort by discount desc, then price asc
-            discounted.sort(key=lambda m: (-m.discount_pct, m.input_price + m.output_price))
-
-            if discounted:
-                save_cache(discounted)
-                logger.info(
-                    f"Found and cached {len(discounted)} discounted models (>= {min_disc_pct:.0f}%)"
-                )
-                return discounted
-
+        if found:
+            save_cache(found)
+            logger.info(
+                f"Found and cached {len(found)} discounted models "
+                f"(>= {settings.min_discount * 100:.0f}%)"
+            )
+            return found
+        logger.warning("Discount sweep found no models; falling back to cache")
     except Exception as e:
-        logger.warning(f"Playwright scraper failed: {e}. Falling back to cache.")
+        logger.warning(f"Discount sweep failed: {e}. Falling back to cache.")
 
-    # 2. Fallback to cached models if available
     cached = load_cache()
     if cached:
         logger.info(f"Loaded {len(cached)} models from cache.")
         return cached
-
-    # 3. Final fallback: endpoint queries
-    async with httpx.AsyncClient(timeout=30.0) as c:
-        return await _fetch_via_endpoints(c, base_url, headers)
+    return []
 
 
 async def _fetch_via_endpoints(
@@ -103,20 +119,31 @@ async def _fetch_via_endpoints(
     data = resp.json()
 
     models = data.get("data", [])
-    model_ids = [m["id"] for m in models if m.get("id")]
+    models_by_id = {m["id"]: m for m in models if m.get("id")}
+    model_ids = list(models_by_id)
 
     decision_model = settings.model
     if decision_model and decision_model not in model_ids:
         model_ids.append(decision_model)
 
     semaphore = asyncio.Semaphore(ENDPOINT_CONCURRENCY)
-    tasks = [fetch_endpoint(c, base_url, headers, mid, semaphore) for mid in model_ids]
+    tasks = [
+        fetch_endpoint(
+            c, base_url, headers, mid, semaphore, models_by_id.get(mid, {})
+        )
+        for mid in model_ids
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     discounted = []
     for r in results:
         if isinstance(r, ModelInfo):
             discounted.append(r)
+
+    before = len(discounted)
+    discounted = [m for m in discounted if _is_chat_capable(m)]
+    if before != len(discounted):
+        logger.info(f"Dropped {before - len(discounted)} non-chat models")
 
     logger.info(
         f"Found {len(discounted)} discounted models (>= {settings.min_discount * 100:.0f}%)"
@@ -130,8 +157,10 @@ async def fetch_endpoint(
     headers: dict,
     model_id: str,
     semaphore: asyncio.Semaphore,
+    m_meta: dict | None = None,
 ) -> ModelInfo | None:
     """Fetch endpoints for one model, gated by semaphore."""
+    m_meta = m_meta or {}
     async with semaphore:
         try:
             ep_resp = await c.get(
@@ -153,13 +182,23 @@ async def fetch_endpoint(
             discount = pricing.get("discount", 0)
 
             if discount >= settings.min_discount:
+                meta = _meta_from_api(m_meta)
                 return ModelInfo(
                     id=model_id,
                     discount_pct=discount * 100,
-                    provider=ep.get("provider", ""),
+                    provider=ep.get("provider", "") or meta["provider"],
                     input_price=float(pricing.get("prompt", 0) or 0),
                     output_price=float(pricing.get("completion", 0) or 0),
-                    context_length=int(ep.get("context_length", 0) or 0),
+                    context_length=int(ep.get("context_length", 0) or 0)
+                    or meta["context_length"],
+                    name=meta["name"],
+                    description=meta["description"],
+                    input_modalities=meta["input_modalities"],
+                    output_modalities=meta["output_modalities"],
+                    supported_parameters=meta["supported_parameters"],
+                    intelligence_index=meta["intelligence_index"],
+                    coding_index=meta["coding_index"],
+                    agentic_index=meta["agentic_index"],
                 )
         except httpx.HTTPError as e:
             logger.warning(f"Failed to fetch endpoints for {model_id}: {e}")

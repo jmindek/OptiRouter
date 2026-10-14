@@ -13,7 +13,7 @@ COPY data/ ./data/
 # Install dependencies only (no package build)
 RUN uv pip install --system --no-build-isolation -c /dev/null \
     apscheduler fastapi httpx \
-    opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc \
+    opentelemetry-api opentelemetry-sdk \
     pydantic pydantic-settings uvicorn
 
 EXPOSE 8080

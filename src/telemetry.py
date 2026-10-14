@@ -8,40 +8,39 @@ from src.config import settings
 
 
 def init_telemetry():
-    """Initialize OpenTelemetry SDK. Console exporter by default, OTLP if endpoint set."""
-    # Traces
+    """Initialize OpenTelemetry SDK.
+
+    Traces go to Langfuse when it is configured, otherwise to the console.
+    Metrics go to the console.
+    """
     provider = TracerProvider()
-    if settings.otel_endpoint:
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+    langfuse_configured = bool(
+        settings.langfuse_host
+        and settings.langfuse_public_key
+        and settings.langfuse_secret_key
+    )
+
+    if langfuse_configured:
+        from src.langfuse_exporter import LangfuseSpanProcessor
 
         provider.add_span_processor(
-            SimpleSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_endpoint))
+            LangfuseSpanProcessor(
+                host=settings.langfuse_host,
+                public_key=settings.langfuse_public_key,
+                secret_key=settings.langfuse_secret_key,
+            )
         )
     else:
-        provider.add_span_processor(
-            SimpleSpanProcessor(ConsoleSpanExporter())
-        )
+        provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+
     trace.set_tracer_provider(provider)
 
-    # Metrics
-    if settings.otel_endpoint:
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-
-        metrics.set_meter_provider(
-            MeterProvider(
-                metric_readers=[
-                    PeriodicExportingMetricReader(
-                        OTLPMetricExporter(endpoint=settings.otel_endpoint)
-                    )
-                ]
-            )
+    metrics.set_meter_provider(
+        MeterProvider(
+            metric_readers=[PeriodicExportingMetricReader(ConsoleMetricExporter())]
         )
-    else:
-        metrics.set_meter_provider(
-            MeterProvider(
-                metric_readers=[PeriodicExportingMetricReader(ConsoleMetricExporter())]
-            )
-        )
+    )
 
 
 tracer = trace.get_tracer("model-router")
