@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.models import ChatMessage, ModelInfo
 from src.router import (
-    MAX_CANDIDATES,
     Requirements,
     RoutingDecision,
     _build_criteria,
@@ -11,11 +10,9 @@ from src.router import (
     _estimate_tokens,
     _filter_candidates,
     _parse_decision,
-    _rank_candidates,
-    _render_state,
     _request_requirements,
-    _truncate_middle,
     classify_request,
+    render_transcript,
 )
 
 MODELS = [
@@ -81,13 +78,13 @@ def _patch_settings():
     return patch("src.router.settings", m)
 
 
-class TestRenderState(unittest.TestCase):
+class TestRenderTranscript(unittest.TestCase):
     def test_roles_and_content(self):
         msgs = [
             ChatMessage(role="system", content="be terse"),
             ChatMessage(role="user", content="write a sort"),
         ]
-        out = _render_state(msgs)
+        out = render_transcript(msgs)
         self.assertIn("[system] be terse", out)
         self.assertIn("[user] write a sort", out)
 
@@ -101,22 +98,16 @@ class TestRenderState(unittest.TestCase):
                 ],
             )
         ]
-        out = _render_state(msgs)
+        out = render_transcript(msgs)
         self.assertIn("look at this", out)
         self.assertIn("<image_url>", out)
 
     def test_accepts_dicts(self):
-        out = _render_state([{"role": "user", "content": "hi"}])
+        out = render_transcript([{"role": "user", "content": "hi"}])
         self.assertIn("[user] hi", out)
 
     def test_empty(self):
-        self.assertEqual(_render_state([]), "")
-
-    def test_truncates_middle_of_long_transcript(self):
-        msgs = [ChatMessage(role="user", content="start " + "x" * 100 + " end")]
-        out = _truncate_middle(_render_state(msgs), limit=60)
-        self.assertLessEqual(len(out), 120)  # limit plus the omission marker
-        self.assertIn("omitted", out)
+        self.assertEqual(render_transcript([]), "")
 
 
 class TestRequirements(unittest.TestCase):
@@ -215,14 +206,6 @@ class TestDescribeModel(unittest.TestCase):
 
 
 class TestBuildCriteria(unittest.TestCase):
-    def test_sorted_by_discount_then_price(self):
-        criteria = _build_criteria(MODELS)
-        # Both have no benchmark scores, so rank falls back to discount order:
-        # gemini 75% first, claude 50% second.
-        keys = list(criteria)
-        self.assertEqual(keys[0], "google/gemini-2.0-flash")
-        self.assertEqual(keys[1], "anthropic/claude-3.5-sonnet")
-
     def test_criteria_is_id_to_description(self):
         criteria = _build_criteria(MODELS)
         self.assertIn("google/gemini-2.0-flash", criteria)
@@ -230,7 +213,7 @@ class TestBuildCriteria(unittest.TestCase):
         self.assertIn("google", desc)
         self.assertIn("75%", desc)
 
-    def test_cap_at_max_candidates(self):
+    def test_includes_all_candidates_no_cap(self):
         many = [
             ModelInfo(
                 id=f"p/m{i}",
@@ -240,33 +223,12 @@ class TestBuildCriteria(unittest.TestCase):
                 output_price=0.002,
                 context_length=4096,
             )
-            for i in range(MAX_CANDIDATES + 20)
+            for i in range(30)
         ]
-        self.assertEqual(len(_build_criteria(many)), MAX_CANDIDATES)
+        self.assertEqual(len(_build_criteria(many)), 30)
 
     def test_empty(self):
         self.assertEqual(_build_criteria([]), {})
-
-    def test_blended_keeps_cheap_and_strong(self):
-        """The capped pool must span cheap-weak to strong-expensive."""
-        pool = [
-            ModelInfo(id="cheap/weak", discount_pct=80, provider="p", input_price=0.00001,
-                      output_price=0.00002, context_length=8192, coding_index=20.0),
-            ModelInfo(id="cheap/weak2", discount_pct=75, provider="p", input_price=0.00002,
-                      output_price=0.00004, context_length=8192, coding_index=25.0),
-            ModelInfo(id="mid/ok", discount_pct=60, provider="p", input_price=0.0002,
-                      output_price=0.0004, context_length=8192, coding_index=55.0),
-            ModelInfo(id="strong/pricey", discount_pct=50, provider="p", input_price=0.002,
-                      output_price=0.004, context_length=8192, coding_index=77.0),
-            ModelInfo(id="strong/pricey2", discount_pct=50, provider="p", input_price=0.003,
-                      output_price=0.006, context_length=8192, coding_index=76.0),
-            ModelInfo(id="filler", discount_pct=50, provider="p", input_price=0.0001,
-                      output_price=0.0002, context_length=8192, coding_index=30.0),
-        ]
-        with patch("src.router.MAX_CANDIDATES", 4):
-            kept = list(_build_criteria(pool))
-        self.assertIn("strong/pricey", kept)  # best score survives
-        self.assertIn("cheap/weak", kept)  # best discount survives
 
 
 class TestParseDecision(unittest.TestCase):
@@ -372,8 +334,9 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "https://openrouter.ai/api/alpha/decisions")
         payload = kwargs["json"]
         self.assertEqual(payload["model"], "typesafe/jev-1.13")
-        self.assertIn("[user] summarize this", payload["state"]["request"])
+        self.assertNotIn("request", payload["state"])  # transcript not sent
         self.assertNotIn("task", payload["state"])  # no keyword tag
+        self.assertIn("weights", payload["state"])
         self.assertIn("cheaper", payload["state"]["preference"])
         self.assertIn("effective price", payload["state"]["preference"])
         q = payload["questions"]["target"]

@@ -25,16 +25,6 @@ DECISIONS_PATH = "/api/alpha/decisions"
 # Keep the candidate pool small. Measured on the real discounted pool: with
 # 21 near-identical text models confidence collapses to ~0.10, but with 5
 # eligible candidates it rises to ~0.45-0.55 and the pick reflects capability
-# (benchmark scores) rather than only price. Below 5 the model is unsure the
-# right option is even present. See README for the pool-size curve.
-MAX_CANDIDATES = 5
-
-# Cap the request state. Jev rejects the whole request with
-# "max_tokens_exceeded" when state + questions overflow its window, so the
-# transcript is truncated from the middle: the start (system prompt, first
-# ask) and the end (the actual last instruction) carry the intent.
-MAX_STATE_CHARS = 24000  # ~6k tokens; leaves room for the candidate list
-
 # Preference text handed to the decision model. Live testing showed that vague
 # or redundant constraints lower confidence; a concrete cost tie-breaker raises
 # it. Open/closed-weight and reasoning preferences were tested and removed.
@@ -61,34 +51,6 @@ class RoutingDecision:
     # | "unknown_choice" | "low_confidence"
 
 
-def _rank_candidates(models: list[ModelInfo]) -> list[ModelInfo]:
-    """Order candidates so the capped pool spans the real tradeoff.
-
-    Ranking by discount alone gives five cheap near-twins; ranking by score
-    alone gives five expensive near-twins. Summed ranks keep cheap, mid and
-    strong options in view, which is what lets the decision model compare
-    price against capability instead of guessing among equals. Measured on the
-    real pool: blended selection lifts confidence to ~0.80 (was ~0.52 by
-    discount, ~0.38 by score).
-    """
-    by_score = sorted(
-        models,
-        key=lambda m: (
-            -(m.coding_index or m.intelligence_index or 0.0),
-            -m.discount_pct,
-            m.input_price + m.output_price,
-        ),
-    )
-    score_rank = {m.id: i for i, m in enumerate(by_score)}
-    discount_rank = {
-        m.id: i
-        for i, m in enumerate(
-            sorted(models, key=lambda m: (-m.discount_pct, m.input_price + m.output_price))
-        )
-    }
-    return sorted(models, key=lambda m: score_rank[m.id] + discount_rank[m.id])
-
-
 def _format_weights_instruction(weights: dict[str, float]) -> str:
     """Format user evaluation weights into clear decision guidelines for Jev."""
     active = {k: v for k, v in weights.items() if v > 0.0}
@@ -105,14 +67,13 @@ def _format_weights_instruction(weights: dict[str, float]) -> str:
 def _build_criteria(models: list[ModelInfo]) -> dict[str, str]:
     """Build the ``choice`` criteria: candidate id -> capability hint.
 
-    The hint tells the decision model what the model is and what it is good
-    for. Discount, price and benchmark scores are included so the decision has
-    real signals to compare instead of near-identical blurbs.
+    Every filtered candidate is sent, unranked and uncapped: the decision
+    model should see the full eligible pool with no shortlist bias. Hard
+    requirements (image/tools/context) were already applied by
+    _filter_candidates; beyond that, selection is entirely the decision
+    model's call, guided by the user's weights.
     """
-    criteria: dict[str, str] = {}
-    for m in _rank_candidates(models)[:MAX_CANDIDATES]:
-        criteria[m.id] = _describe_model(m)
-    return criteria
+    return {m.id: _describe_model(m) for m in models}
 
 
 @dataclass
@@ -260,16 +221,6 @@ def _estimate_tokens(messages: list) -> int:
     return len(render_transcript(messages)) // 4
 
 
-def _render_state(messages: list) -> str:
-    """Render the request transcript for the decision model.
-
-    The prompt carries its own context, so the router does not summarise or
-    tag it. Everything the caller sent is passed through, in order, except
-    that an oversized transcript is truncated from the middle.
-    """
-    return _truncate_middle(render_transcript(messages))
-
-
 def render_transcript(messages: list) -> str:
     """Render the transcript with no truncation (used for size estimates)."""
     parts: list[str] = []
@@ -280,18 +231,6 @@ def render_transcript(messages: list) -> str:
             content = m.get("content")
         parts.append(f"[{role}] {_render_content(content)}")
     return "\n\n".join(parts)
-
-
-def _truncate_middle(text: str, limit: int = MAX_STATE_CHARS) -> str:
-    """Trim a long transcript from the middle, keeping both ends."""
-    if len(text) <= limit:
-        return text
-    head = limit // 2
-    tail = limit - head
-    omitted = len(text) - limit
-    return (
-        f"{text[:head]}\n\n[... {omitted} characters omitted ...]\n\n{text[-tail:]}"
-    )
 
 
 def _render_content(content) -> str:
@@ -315,8 +254,10 @@ def _render_content(content) -> str:
 async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDecision:
     """Ask the decision model which discounted model should serve this request.
 
-    The full request transcript is sent verbatim: the prompt carries its own
-    context, so no keyword tag or summary is derived from it.
+    The prompt transcript is not sent: hard requirements derived from it
+    (image/tools/context) are applied by _filter_candidates, and the user's
+    weights define the optimization objective. The decision model sees only
+    the eligible candidates and their facts.
 
     Returns a :class:`RoutingDecision`. ``model_id`` is ``None`` unless the
     decision model picked a known candidate with confidence at or above
@@ -351,9 +292,9 @@ async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDe
     weights_guidance = _format_weights_instruction(settings.weights)
 
     instructions = (
-        "Read the request below, then choose which candidate model should "
-        "serve it. Match the candidate's strengths to what the request "
-        "actually needs."
+        "Choose which candidate model should serve this request. The user's "
+        "weights state what they are optimizing for; weigh the candidates' "
+        "facts accordingly."
     )
     if weights_guidance:
         instructions += f" {weights_guidance}"
@@ -364,7 +305,6 @@ async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDe
     payload = {
         "model": settings.model,
         "state": {
-            "request": _render_state(messages),
             "preference": preference or "none",
             "weights": settings.weights,
         },
