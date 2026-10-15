@@ -109,15 +109,15 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 ### 6. Config (`src/config.py`)
 - Pydantic Settings with env var aliases.
 - All vars prefixed with `ROUTER_` (except `OPENROUTER_API_KEY`).
-- `min_discount` (default 0.25), `min_confidence` (default 0.30), `low_confidence_choice` (default `discount`), `min_context_length` (default 131072), `min_endpoint_uptime` (default 95.0), `min_endpoint_requests` (default 100), `weights` (default: discount=0.4, latency=0.2, uptime=0.2, coding_index=0.2, intelligence_index=0.0, agentic_index=0.0), `preference` (cost/quality/none).
+- `min_discount` (default 0.25), `min_confidence` (default 0.30), `low_confidence_choice` (default `discount`, supports `cost`, `throughput`, `context_window`, `reasoning`, `composite_score`), `min_context_length` (default 131072), `min_endpoint_uptime` (default 95.0), `min_endpoint_requests` (default 100), `weights` (default: discount=0.3, cost=0.2, latency=0.15, throughput=0.15, uptime=0.1, coding_index=0.1, context_window=0.0, reasoning=0.0, composite_score=0.0), `preference` (cost/quality/none).
 
 ---
 
 ## Current State
 
 ### Tests
-- **93 tests, all passing.** `uv run pytest`.
-- Coverage: router (requirements, filtering, decision parsing), inventory sweep (non-chat filtering, cache fallback), cache save/load, model validation, rate limiter, handoff modes, P0 regressions, Langfuse exporter.
+- **100 tests, all passing.** `uv run pytest`.
+- Coverage: router (requirements, filtering, decision parsing, feature fallback), inventory sweep (non-chat filtering, cache fallback), cache save/load, model validation, rate limiter, handoff modes, P0 regressions, Langfuse exporter.
 - `uv run pyright src/` reports 0 errors.
 
 ### Git History & Status
@@ -129,6 +129,8 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
   - Removed the shortlist cap (`MAX_CANDIDATES`) and rank-sum shortlist (`_rank_candidates`).
   - Removed transcript bias (`_render_state`, `_truncate_middle`) — the decision model sees only weights and preference, not the user prompt.
   - Captured `artificial_analysis` benchmark scores into the candidate descriptions.
+  - Added effective blended cost, throughput, context window, reasoning detection, and composite capability scoring (with fallback heuristics for missing benchmark scores) to candidate descriptions, fallback selector, and user feature weighting to improve decision confidence above 30%.
+  - Supported comma-separated string format for `ROUTER_WEIGHTS`.
   - Replaced the Playwright scraper with a browserless `/endpoints` sweep; refresh is now hourly.
   - Forward all request fields and pass the non-stream response through unchanged.
   - `/healthz` reports cache age and model count.

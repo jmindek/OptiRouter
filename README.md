@@ -24,7 +24,7 @@ docker compose up --build
 | `ROUTER_OMLX_BASE` | `http://127.0.0.1:8000` | Local oMLX fallback base URL |
 | `ROUTER_MIN_DISCOUNT` | `0.25` | Minimum discount threshold (0.0–1.0) |
 | `ROUTER_MIN_CONFIDENCE` | `0.30` | Minimum decision-model confidence to accept a pick; below it the router picks by `ROUTER_LOW_CONFIDENCE_CHOICE` |
-| `ROUTER_LOW_CONFIDENCE_CHOICE` | `discount` | Feature used to pick the best candidate when confidence < `ROUTER_MIN_CONFIDENCE`: `discount`, `latency`, `uptime`, `coding_index`, `intelligence_index`, `agentic_index` |
+| `ROUTER_LOW_CONFIDENCE_CHOICE` | `discount` | Feature used to pick the best candidate when confidence < `ROUTER_MIN_CONFIDENCE`: `discount`, `cost`, `latency`, `throughput`, `uptime`, `context_window`, `reasoning`, `composite_score`, `coding_index`, `intelligence_index`, `agentic_index` |
 | `ROUTER_PREFERENCE` | `cost` | Tie-breaker handed to the decision model: `cost`, `quality`, or `none` |
 | `ROUTER_FALLBACK_MODE` | `static` | `static` = auto-fallback to `ROUTER_STATIC_FALLBACK`; `halt` = return 503 |
 | `ROUTER_STATIC_FALLBACK` | `openrouter/deepseek/deepseek-v3.1` | Fallback model when routing fails |
@@ -34,7 +34,7 @@ docker compose up --build
 | `ROUTER_MIN_CONTEXT_LENGTH` | `131072` | Minimum context length in tokens; models with shorter context are excluded |
 | `ROUTER_MIN_ENDPOINT_UPTIME` | `95.0` | Minimum 1d endpoint uptime (%) to consider endpoint stats trustworthy |
 | `ROUTER_MIN_ENDPOINT_REQUESTS` | `100` | Minimum 30m endpoint request count to consider endpoint latency trustworthy |
-| `ROUTER_WEIGHTS` | `{"discount": 0.4, "latency": 0.2, "uptime": 0.2, "coding_index": 0.2, "intelligence_index": 0.0, "agentic_index": 0.0}` | Feature weights for the decision model. JSON string or dict. Features missing from a candidate are treated as 0. |
+| `ROUTER_WEIGHTS` | `{"discount": 0.3, "cost": 0.2, "latency": 0.15, "throughput": 0.15, "uptime": 0.1, "coding_index": 0.1, ...}` | Feature weights for the decision model. JSON string, dict, or comma-separated pairs (`"discount=0.3,cost=0.2"`). Features missing from a candidate are treated as 0. |
 | `LANGFUSE_HOST` | | Langfuse base URL (e.g. `http://localhost:3000`). Set with the two keys below to send traces to Langfuse; otherwise traces print to console |
 | `ROUTER_TRACE_INPUT` | `truncated` | What a trace records as input: `none`, `decision`, `truncated`, or `full` |
 | `ROUTER_TRACE_INPUT_CHARS` | `500` | Character cap when `ROUTER_TRACE_INPUT=truncated` |
