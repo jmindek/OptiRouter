@@ -181,7 +181,7 @@ Live testing against the real discounted pool informed the defaults.
 
 - **`ROUTER_MIN_CONFIDENCE=0.30`** Confidence for model selection sits roughly 0.30–0.55 with a good pool. A 0.55 bar abstained often; 0.30 leaves room for the crossing cases while still rejecting the near-coin-flip answers a bad pool produces.
 
-- **`ROUTER_PREFERENCE=cost`.** Of the tie-breakers tested, only cost raised
+- **`ROUTER_PREFERENCE=cost`** Of the tie-breakers tested, only cost raised
   confidence (0.30 → 0.35 on a large pool). Open-weight and closed-weight
   preferences *lowered* it, and a reasoning preference lowered it and was
   ignored. A detailed judging rubric lowered it too. A clean question with one
