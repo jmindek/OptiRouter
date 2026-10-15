@@ -274,13 +274,18 @@ class SystemOneProvider(DecisionModelProvider):
                 f"Could not extract choice from SystemOne response: {str(data)[:200]}"
             )
 
+        answer: dict[str, Any] = {
+            "choice": choice,
+            "confidence": confidence,
+        }
+        # SystemOne returns the full distribution; keep it so callers can see
+        # runner-ups instead of only the argmax.
+        probabilities = target_answer.get("probabilities")
+        if probabilities:
+            answer["probabilities"] = probabilities
+
         return {
-            "answers": {
-                "target": {
-                    "choice": choice,
-                    "confidence": confidence,
-                }
-            },
+            "answers": {"target": answer},
             "model": model,
         }
 
