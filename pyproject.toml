@@ -3,6 +3,7 @@ name = "model-router"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
+license = "MIT"
 dependencies = [
     "apscheduler>=3.11.3",
     "fastapi>=0.142.2",
