@@ -1,0 +1,649 @@
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.models import ChatMessage, ModelInfo
+from src.router import (
+    Requirements,
+    RoutingDecision,
+    _build_criteria,
+    _describe_model,
+    _estimate_tokens,
+    _filter_candidates,
+    _parse_decision,
+    _request_requirements,
+    classify_request,
+    render_transcript,
+    DECISIONS_PATH,
+)
+
+MODELS = [
+    ModelInfo(
+        id="anthropic/claude-3.5-sonnet",
+        discount_pct=50.0,
+        provider="anthropic",
+        input_price=0.003,
+        output_price=0.015,
+        context_length=200000,
+    ),
+    ModelInfo(
+        id="google/gemini-2.0-flash",
+        discount_pct=75.0,
+        provider="google",
+        input_price=0.000075,
+        output_price=0.0003,
+        context_length=1048576,
+    ),
+]
+
+
+def _response(body: dict, status: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = body
+    resp.text = str(body)
+    return resp
+
+
+def _patched_client(resp):
+    """Patch httpx.AsyncClient so .post(*) returns `resp`."""
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return patch("src.router.httpx.AsyncClient", return_value=mock_client), mock_client
+
+
+CLOUD_SETTINGS = {
+    "model": "typesafe/jev-1.13",
+    "api_base": "https://openrouter.ai/api/v1",
+    "api_key": "sk-test",
+    "mode": "cloud",
+    "decision_model_provider": "openrouter",
+    "min_confidence": 0.30,
+    "preference": "cost",
+    "min_context_length": 131072,
+    "weights": {
+        "discount": 0.4,
+        "latency": 0.2,
+        "uptime": 0.2,
+        "coding_index": 0.2,
+        "intelligence_index": 0.0,
+        "agentic_index": 0.0,
+    },
+}
+
+
+def _patch_settings():
+    m = MagicMock()
+    for k, v in CLOUD_SETTINGS.items():
+        setattr(m, k, v)
+    return patch("src.router.settings", m)
+
+
+def _patch_provider(mock_provider):
+    """Patch get_provider to return a mock provider."""
+    return patch("src.router.get_provider", return_value=mock_provider)
+
+
+class TestRenderTranscript(unittest.TestCase):
+    def test_roles_and_content(self):
+        msgs = [
+            ChatMessage(role="system", content="be terse"),
+            ChatMessage(role="user", content="write a sort"),
+        ]
+        out = render_transcript(msgs)
+        self.assertIn("[system] be terse", out)
+        self.assertIn("[user] write a sort", out)
+
+    def test_content_parts(self):
+        msgs = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "x"}},
+                ],
+            )
+        ]
+        out = render_transcript(msgs)
+        self.assertIn("look at this", out)
+        self.assertIn("<image_url>", out)
+
+    def test_accepts_dicts(self):
+        out = render_transcript([{"role": "user", "content": "hi"}])
+        self.assertIn("[user] hi", out)
+
+    def test_empty(self):
+        self.assertEqual(render_transcript([]), "")
+
+
+class TestRequirements(unittest.TestCase):
+    def test_detects_image_part(self):
+        msgs = [
+            ChatMessage(role="user", content=[{"type": "image_url", "image_url": {}}])
+        ]
+        self.assertTrue(_request_requirements(msgs).needs_image_input)
+
+    def test_detects_tool_calls(self):
+        msgs = [ChatMessage(role="assistant", tool_calls=[{"id": "1"}])]
+        self.assertTrue(_request_requirements(msgs).needs_tools)
+
+    def test_detects_tool_role(self):
+        msgs = [ChatMessage(role="tool", content="result")]
+        self.assertTrue(_request_requirements(msgs).needs_tools)
+
+    def test_plain_text_has_no_requirements(self):
+        msgs = [ChatMessage(role="user", content="hello")]
+        req = _request_requirements(msgs)
+        self.assertFalse(req.needs_image_input)
+        self.assertFalse(req.needs_tools)
+
+    def test_token_estimate_from_untruncated_text(self):
+        msgs = [ChatMessage(role="user", content="a" * 4000)]
+        self.assertGreaterEqual(_estimate_tokens(msgs), 900)
+
+
+class TestFilterCandidates(unittest.TestCase):
+    def _pool(self):
+        return [
+            ModelInfo(
+                id="text/only",
+                discount_pct=50,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=8192,
+                input_modalities=["text"],
+                supported_parameters=["tools"],
+            ),
+            ModelInfo(
+                id="vision/model",
+                discount_pct=50,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=8192,
+                input_modalities=["text", "image"],
+                supported_parameters=[],
+            ),
+            ModelInfo(
+                id="small/ctx",
+                discount_pct=50,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+                input_modalities=["text"],
+                supported_parameters=[],
+            ),
+        ]
+
+    def test_image_filter(self):
+        kept = _filter_candidates(self._pool(), Requirements(needs_image_input=True))
+        self.assertEqual([m.id for m in kept], ["vision/model"])
+
+    def test_tools_filter(self):
+        kept = _filter_candidates(self._pool(), Requirements(needs_tools=True))
+        self.assertEqual([m.id for m in kept], ["text/only"])
+
+    def test_context_filter(self):
+        kept = _filter_candidates(self._pool(), Requirements(min_context=8000))
+        self.assertEqual([m.id for m in kept], ["text/only", "vision/model"])
+
+    def test_no_requirements_keeps_all(self):
+        kept = _filter_candidates(self._pool(), Requirements())
+        self.assertEqual(len(kept), 3)
+
+    def test_never_returns_empty(self):
+        kept = _filter_candidates(
+            self._pool(), Requirements(needs_tools=True, needs_image_input=True)
+        )
+        self.assertEqual(len(kept), 3)  # falls back to the full pool
+
+
+class TestDescribeModel(unittest.TestCase):
+    def test_includes_capability_and_cost(self):
+        m = ModelInfo(
+            id="vendor/model-x",
+            discount_pct=80.0,
+            provider="vendor",
+            input_price=0.000001,
+            output_price=0.000002,
+            context_length=131072,
+            name="Vendor Model X",
+            description="A frontier coding model. Second sentence.",
+            input_modalities=["text", "image"],
+            output_modalities=["text"],
+            supported_parameters=["tools", "reasoning", "structured_outputs"],
+        )
+        hint = _describe_model(m)
+        self.assertIn("Vendor Model X", hint)
+        self.assertIn("A frontier coding model.", hint)
+        self.assertNotIn("Second sentence", hint)  # only first sentence
+        self.assertIn("accepts image", hint)
+        self.assertIn("tool calling", hint)
+        self.assertIn("reasoning", hint)
+        self.assertIn("80% off", hint)
+        self.assertIn("$1.00/Mtok in", hint)  # effective price tie-breaker
+
+    def test_minimal_model(self):
+        m = ModelInfo(
+            id="vendor/bare",
+            discount_pct=50.0,
+            provider="",
+            input_price=0.0,
+            output_price=0.0,
+            context_length=4096,
+        )
+        hint = _describe_model(m)
+        self.assertIn("vendor/bare", hint)  # falls back to id
+        self.assertIn("50% off", hint)
+
+
+class TestBuildCriteria(unittest.TestCase):
+    def test_criteria_is_id_to_description(self):
+        criteria = _build_criteria(MODELS)
+        self.assertIn("google/gemini-2.0-flash", criteria)
+        desc = criteria["google/gemini-2.0-flash"]
+        self.assertIn("google", desc)
+        self.assertIn("75%", desc)
+
+    def test_includes_all_candidates_no_cap(self):
+        many = [
+            ModelInfo(
+                id=f"p/m{i}",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=4096,
+            )
+            for i in range(30)
+        ]
+        self.assertEqual(len(_build_criteria(many)), 30)
+
+    def test_empty(self):
+        self.assertEqual(_build_criteria([]), {})
+
+
+class TestParseDecision(unittest.TestCase):
+    def test_ok(self):
+        data = {
+            "model": "jev-1.13.0",
+            "answers": {
+                "target": {
+                    "type": "choice",
+                    "choice": "google/gemini-2.0-flash",
+                    "probabilities": {"google/gemini-2.0-flash": 0.81},
+                    "confidence": 0.7,
+                }
+            },
+            "usage": {"input_tokens": 312, "output_tokens": 0},
+        }
+        with _patch_settings():
+            d = _parse_decision(data)
+        self.assertEqual(d.model_id, "google/gemini-2.0-flash")
+        self.assertAlmostEqual(d.confidence, 0.7)
+        self.assertEqual(d.reason, "ok")
+
+    def test_low_confidence_abstains(self):
+        data = {
+            "answers": {
+                "target": {
+                    "type": "choice",
+                    "choice": "google/gemini-2.0-flash",
+                    "confidence": 0.2,
+                }
+            }
+        }
+        with _patch_settings():
+            d = _parse_decision(data)
+        self.assertIsNone(d.model_id)
+        self.assertEqual(d.reason, "low_confidence")
+        self.assertAlmostEqual(d.confidence, 0.2)
+
+    def test_missing_answers(self):
+        with _patch_settings():
+            d = _parse_decision({})
+        self.assertIsNone(d.model_id)
+        self.assertEqual(d.reason, "parse_error")
+
+    def test_answers_not_dict(self):
+        with _patch_settings():
+            d = _parse_decision({"answers": {"target": "nope"}})
+        self.assertEqual(d.reason, "parse_error")
+
+    def test_no_choice_field(self):
+        with _patch_settings():
+            d = _parse_decision({"answers": {"target": {"type": "choice"}}})
+        self.assertEqual(d.reason, "parse_error")
+
+    def test_non_numeric_confidence_treated_as_zero(self):
+        data = {
+            "answers": {
+                "target": {"type": "choice", "choice": "m", "confidence": "high"}
+            }
+        }
+        with _patch_settings():
+            d = _parse_decision(data)
+        self.assertEqual(d.reason, "low_confidence")
+        self.assertEqual(d.confidence, 0.0)
+
+
+class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
+    async def test_no_models(self):
+        d = await classify_request([ChatMessage(role="user", content="hi")], [])
+        self.assertIsNone(d.model_id)
+        self.assertEqual(d.reason, "no_models")
+
+    async def test_no_api_key(self):
+        # With provider interface, no API key means the OpenRouter provider
+        # will fail when called. We mock the provider to simulate this.
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(side_effect=ValueError("No API key configured"))
+        ctx = _patch_provider(mock_provider)
+        with ctx:
+            d = await classify_request([ChatMessage(role="user", content="hi")], MODELS)
+        self.assertIsNone(d.model_id)
+        self.assertEqual(d.reason, "http_error")
+
+    async def test_success_posts_correct_shape(self):
+        body = {
+            "model": "jev-1.13.0",
+            "answers": {
+                "target": {
+                    "type": "choice",
+                    "choice": "google/gemini-2.0-flash",
+                    "probabilities": {"google/gemini-2.0-flash": 0.81},
+                    "confidence": 0.9,
+                }
+            },
+        }
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(return_value=body)
+        ctx = _patch_provider(mock_provider)
+        with ctx, _patch_settings():
+            d = await classify_request(
+                [ChatMessage(role="user", content="summarize this")], MODELS
+            )
+
+        self.assertEqual(d.model_id, "google/gemini-2.0-flash")
+        self.assertEqual(d.reason, "ok")
+
+        # Verify the provider was called with correct payload shape.
+        args, kwargs = mock_provider.call.call_args
+        payload = args[0]
+        self.assertEqual(payload["model"], "typesafe/jev-1.13")
+        self.assertNotIn("request", payload["state"])  # transcript not sent
+        self.assertNotIn("task", payload["state"])  # no keyword tag
+        self.assertIn("weights", payload["state"])
+        self.assertIn("cheaper", payload["state"]["preference"])
+        self.assertIn("effective price", payload["state"]["preference"])
+        q = payload["questions"]["target"]
+        self.assertEqual(q["type"], "choice")
+        self.assertIn("instructions", q)
+        self.assertIn("Tie-breaker", q["instructions"])
+        self.assertIn("google/gemini-2.0-flash", q["criteria"])
+        # The cost tie-breaker must be visible per candidate.
+        self.assertIn("/Mtok in", q["criteria"]["google/gemini-2.0-flash"])
+        # No chat fields must leak into a decision request.
+        self.assertNotIn("messages", payload)
+        self.assertNotIn("stream", payload)
+
+    async def test_preference_none_omits_tiebreaker(self):
+        body = {
+            "answers": {
+                "target": {
+                    "type": "choice",
+                    "choice": "google/gemini-2.0-flash",
+                    "confidence": 0.5,
+                }
+            }
+        }
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(return_value=body)
+        ctx = _patch_provider(mock_provider)
+        with ctx, _patch_settings() as m:
+            m.preference = "none"
+            await classify_request([ChatMessage(role="user", content="hi")], MODELS)
+        payload = mock_provider.call.call_args[0][0]
+        self.assertNotIn("Tie-breaker", payload["questions"]["target"]["instructions"])
+        self.assertEqual(payload["state"]["preference"], "none")
+
+    async def test_http_error(self):
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(side_effect=ValueError("HTTP 400: boom"))
+        ctx = _patch_provider(mock_provider)
+        with ctx, _patch_settings():
+            d = await classify_request([ChatMessage(role="user", content="hi")], MODELS)
+        self.assertIsNone(d.model_id)
+        self.assertEqual(d.reason, "http_error")
+
+    async def test_invalid_json(self):
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(side_effect=ValueError("parse error"))
+        ctx = _patch_provider(mock_provider)
+        with ctx, _patch_settings():
+            d = await classify_request([ChatMessage(role="user", content="hi")], MODELS)
+        self.assertIsNone(d.model_id)
+        self.assertEqual(d.reason, "http_error")
+
+
+class TestPickByFeature(unittest.TestCase):
+    def setUp(self):
+        self.pool = [
+            ModelInfo(
+                id="first-in-list",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.002,
+                output_price=0.004,
+                context_length=131072,
+                latency_p50_ms=800.0,
+                uptime_pct=96.0,
+                coding_index=40.0,
+                intelligence_index=50.0,
+                agentic_index=30.0,
+            ),
+            ModelInfo(
+                id="highest-discount",
+                discount_pct=85.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=131072,
+                latency_p50_ms=900.0,
+                uptime_pct=95.0,
+                coding_index=35.0,
+                intelligence_index=45.0,
+                agentic_index=25.0,
+            ),
+            ModelInfo(
+                id="fastest-and-smartest",
+                discount_pct=30.0,
+                provider="p",
+                input_price=0.003,
+                output_price=0.006,
+                context_length=131072,
+                latency_p50_ms=250.0,
+                uptime_pct=99.9,
+                coding_index=75.0,
+                intelligence_index=80.0,
+                agentic_index=70.0,
+            ),
+        ]
+
+    def test_pick_by_discount(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(pick_by_feature(self.pool, "discount").id, "highest-discount")
+
+    def test_pick_by_latency(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(
+            pick_by_feature(self.pool, "latency").id, "fastest-and-smartest"
+        )
+
+    def test_pick_by_uptime(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(
+            pick_by_feature(self.pool, "uptime").id, "fastest-and-smartest"
+        )
+
+    def test_pick_by_indexes(self):
+        from src.router import pick_by_feature
+
+        for feat in ("coding_index", "intelligence_index", "agentic_index"):
+            self.assertEqual(
+                pick_by_feature(self.pool, feat).id, "fastest-and-smartest"
+            )
+
+    def test_pick_by_cost_and_price(self):
+        from src.router import pick_by_feature
+
+        # highest-discount has lowest input (0.001) and output (0.002) -> effective 1.25/Mtok
+        self.assertEqual(pick_by_feature(self.pool, "cost").id, "highest-discount")
+        self.assertEqual(pick_by_feature(self.pool, "price").id, "highest-discount")
+
+    def test_pick_by_throughput(self):
+        from src.router import pick_by_feature
+
+        pool_with_throughput = [
+            ModelInfo(
+                id="slow-gen",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=10000,
+                throughput_p50=25.0,
+            ),
+            ModelInfo(
+                id="fast-gen",
+                discount_pct=40.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=10000,
+                throughput_p50=350.0,
+            ),
+        ]
+        self.assertEqual(
+            pick_by_feature(pool_with_throughput, "throughput").id, "fast-gen"
+        )
+
+    def test_pick_by_context_window(self):
+        from src.router import pick_by_feature
+
+        pool_with_ctx = [
+            ModelInfo(
+                id="short-ctx",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=32768,
+            ),
+            ModelInfo(
+                id="long-ctx",
+                discount_pct=40.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=1048576,
+            ),
+        ]
+        self.assertEqual(
+            pick_by_feature(pool_with_ctx, "context_window").id, "long-ctx"
+        )
+        self.assertEqual(
+            pick_by_feature(pool_with_ctx, "context_length").id, "long-ctx"
+        )
+
+    def test_pick_by_reasoning(self):
+        from src.router import pick_by_feature
+
+        pool_with_reasoning = [
+            ModelInfo(
+                id="standard-model",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=32768,
+                supported_parameters=["tools"],
+            ),
+            ModelInfo(
+                id="deep-reasoning-model",
+                discount_pct=40.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=32768,
+                supported_parameters=["tools", "reasoning"],
+            ),
+        ]
+        self.assertEqual(
+            pick_by_feature(pool_with_reasoning, "reasoning").id, "deep-reasoning-model"
+        )
+
+    def test_pick_by_composite_score(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(
+            pick_by_feature(self.pool, "composite_score").id, "fastest-and-smartest"
+        )
+        self.assertEqual(
+            pick_by_feature(self.pool, "model_tier").id, "fastest-and-smartest"
+        )
+
+    def test_composite_score_heuristic_fallback(self):
+        m_frontier = ModelInfo(
+            id="deepseek/deepseek-v3",
+            name="DeepSeek V3",
+            description="A flagship 671B model.",
+            discount_pct=50.0,
+            provider="p",
+            input_price=0.001,
+            output_price=0.001,
+            context_length=64000,
+        )
+        m_mini = ModelInfo(
+            id="vendor/model-mini",
+            name="Model Mini",
+            description="A fast 8B flash model.",
+            discount_pct=50.0,
+            provider="p",
+            input_price=0.001,
+            output_price=0.001,
+            context_length=64000,
+        )
+        self.assertGreater(m_frontier.composite_score, m_mini.composite_score)
+        self.assertEqual(m_frontier.composite_score, 60.0)
+        self.assertEqual(m_mini.composite_score, 30.0)
+
+    def test_settings_weights_string_parsing(self):
+        from src.config import Settings
+
+        s = Settings(ROUTER_WEIGHTS="discount=0.5,cost=0.3,throughput=0.2")  # type: ignore[call-arg]
+        self.assertEqual(s.weights["discount"], 0.5)
+        self.assertEqual(s.weights["cost"], 0.3)
+        self.assertEqual(s.weights["throughput"], 0.2)
+
+    def test_invalid_low_confidence_choice_rejected(self):
+        from pydantic import ValidationError
+        from src.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(ROUTER_LOW_CONFIDENCE_CHOICE="invalid")  # type: ignore[call-arg]
+
+
+if __name__ == "__main__":
+    unittest.main()

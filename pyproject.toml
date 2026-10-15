@@ -1,0 +1,32 @@
+[project]
+name = "model-router"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+license = "MIT"
+dependencies = [
+    "apscheduler>=3.11.3",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "opentelemetry-api>=1.39.0",
+    "opentelemetry-sdk>=1.39.0",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "black>=26.10.1",
+    "pre-commit>=4.7.0",
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
