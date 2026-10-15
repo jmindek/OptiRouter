@@ -1,4 +1,4 @@
-# OptiRoute
+# OptiRouterr
 
 Routes AI requests to discounted OpenRouter models. Uses a decision model to pick the best discounted candidate for each request, guided by user-configurable feature weights.
 
@@ -140,6 +140,8 @@ Client → /v1/chat/completions → classify_request() → select discounted mod
 ## License
 
 [MIT](LICENSE)
+
+[ko-fi.com/jerrymindek](https://ko-fi.com/jerrymindek)
 
 
 ```bash

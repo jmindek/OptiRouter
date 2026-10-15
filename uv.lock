@@ -269,7 +269,7 @@ wheels = [
 ]
 
 [[package]]
-name = "optiroute"
+name = "optirouter"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

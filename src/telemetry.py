@@ -46,8 +46,8 @@ def init_telemetry():
     )
 
 
-tracer = trace.get_tracer("optiroute")
-meter = metrics.get_meter("optiroute")
+tracer = trace.get_tracer("optirouter")
+meter = metrics.get_meter("optirouter")
 
 # Metrics
 request_duration = meter.create_histogram(
