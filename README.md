@@ -141,6 +141,8 @@ Client → /v1/chat/completions → classify_request() → select discounted mod
 
 [MIT](LICENSE)
 
+[ko-fi.com/jerrymindek](https://ko-fi.com/jerrymindek)
+
 
 ```bash
 uv sync
