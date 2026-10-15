@@ -1,14 +1,14 @@
-"""Live probe of the OpenRouter Decisions API (typesafe/jev-1.13).
+"""Live probe of the OpenRouter Decisions API.
 
-Sends one real request and prints the exact request/response so we can verify
-our assumed contract. Uses the real discounted inventory from the cache.
+Sends one real request matching the router's current payload structure
+(filtered candidates, user weights, serving facts, no transcript bias)
+and prints the exact request and response.
 
     uv run python scripts/probe_decisions.py
 """
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -16,50 +16,86 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config import settings  # noqa: E402
 from src.inventory import load_cache  # noqa: E402
-from src.router import _build_criteria, _decisions_base  # noqa: E402
+from src.models import ChatMessage  # noqa: E402
+from src.router import (  # noqa: E402
+    DECISIONS_PATH,
+    _PREFERENCE_TEXT,
+    _build_criteria,
+    _decisions_base,
+    _estimate_tokens,
+    _filter_candidates,
+    _format_weights_instruction,
+    _get_router_api,
+    _request_requirements,
+)
 
-MODEL = os.getenv("ROUTER_MODEL", "typesafe/jev-1.13")
-API_KEY = os.getenv("ROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
-API_BASE = os.getenv("ROUTER_API_BASE", "https://openrouter.ai/api/v1")
-URL = f"{_decisions_base(API_BASE)}/api/alpha/decisions"
 
-TASK = "Write a Python function that reverses a linked list. Use recursion."
+def build_payload(messages: list[ChatMessage]) -> tuple[dict, str, str]:
+    api_base, api_key = _get_router_api()
+    if not api_key:
+        raise RuntimeError("No ROUTER_API_KEY or OPENROUTER_API_KEY found")
 
-
-def build_payload() -> dict:
     models = load_cache()
-    criteria = _build_criteria(models)
-    return {
-        "model": MODEL,
-        "state": {"message": TASK},
+    req = _request_requirements(messages, estimated_tokens=_estimate_tokens(messages))
+    filtered = _filter_candidates(models, req)
+    criteria = _build_criteria(filtered)
+
+    preference = _PREFERENCE_TEXT.get(settings.preference, "")
+    weights_guidance = _format_weights_instruction(settings.weights)
+
+    instructions = (
+        "Choose which candidate model should serve this request. The user's "
+        "weights state what they are optimizing for; weigh the candidates' "
+        "facts accordingly."
+    )
+    if weights_guidance:
+        instructions += f" {weights_guidance}"
+    if preference:
+        instructions += f" Tie-breaker: {preference}."
+    instructions += " Answer with one of the supplied options."
+
+    payload = {
+        "model": settings.model,
+        "state": {
+            "preference": preference or "none",
+            "weights": settings.weights,
+        },
         "questions": {
             "target": {
                 "type": "choice",
-                "instructions": (
-                    "Which model should serve this request? Pick the one that best "
-                    "fits the task. Prefer higher discounts when models are comparable."
-                ),
+                "instructions": instructions,
                 "criteria": criteria,
             }
         },
     }
+    url = f"{_decisions_base(api_base)}{DECISIONS_PATH}"
+    return payload, url, api_key
 
 
 async def main() -> None:
-    payload = build_payload()
-    print(
-        f"=== REQUEST ({len(payload['questions']['target']['criteria'])} candidates) ==="
-    )
-    print(f"POST {URL}")
-    print(f"task: {TASK}")
+    sample_messages = [
+        ChatMessage(
+            role="user",
+            content="Write a Python function that reverses a linked list. Use recursion.",
+        )
+    ]
+    payload, url, api_key = build_payload(sample_messages)
+
+    candidate_count = len(payload["questions"]["target"]["criteria"])
+    print(f"=== REQUEST ({candidate_count} candidates) ===")
+    print(f"POST {url}")
+    print(f"Model: {payload['model']}")
+    print(f"State: {json.dumps(payload['state'])}")
+    print(f"Instructions: {payload['questions']['target']['instructions']}")
     print()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
-            URL,
+            url,
             headers={
-                "Authorization": f"Bearer {API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json=payload,
@@ -67,7 +103,14 @@ async def main() -> None:
 
     print(f"=== RESPONSE (status {resp.status_code}) ===")
     try:
-        print(json.dumps(resp.json(), indent=2))
+        data = resp.json()
+        print(json.dumps(data, indent=2))
+        ans = data.get("answers", {}).get("target", {})
+        print("\n=== SUMMARY ===")
+        print(f"Chosen model: {ans.get('choice')}")
+        print(f"Confidence:   {ans.get('confidence')}")
+        top3 = sorted(ans.get("probabilities", {}).items(), key=lambda kv: -kv[1])[:3]
+        print(f"Top 3 probs:  {top3}")
     except ValueError:
         print(resp.text)
 
