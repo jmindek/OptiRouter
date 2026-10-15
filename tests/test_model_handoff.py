@@ -95,6 +95,24 @@ class TestHandleModelHandoff(unittest.TestCase):
             model, _ = handle_model_handoff("old-model", self.models)
             self.assertEqual(model, "best-model")
 
+    def test_parse_cron_validates_5_fields(self):
+        from src.main import _parse_cron
+
+        self.assertEqual(
+            _parse_cron("0 * * * *"),
+            {
+                "minute": "0",
+                "hour": "*",
+                "day": "*",
+                "month": "*",
+                "day_of_week": "*",
+            },
+        )
+        with self.assertRaises(ValueError):
+            _parse_cron("0 0 * * * *")  # 6 fields
+        with self.assertRaises(ValueError):
+            _parse_cron("0 * *")  # 3 fields
+
 
 if __name__ == "__main__":
     unittest.main()

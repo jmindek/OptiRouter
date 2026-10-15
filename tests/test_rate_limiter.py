@@ -26,3 +26,20 @@ def test_rate_limiter_backoff():
     asyncio.run(rl.wait_if_needed("test-model"))
     elapsed = time.monotonic() - start
     assert elapsed >= 0.01  # Should have waited
+
+
+def test_rate_limiter_does_not_block_unthrottled_models():
+    """Waiting on a throttled model must not hold the lock and block other models."""
+    rl = RateLimiter()
+    rl._backoff_until["throttled-model"] = time.monotonic() + 10.0
+
+    async def check():
+        task = asyncio.create_task(rl.wait_if_needed("throttled-model"))
+        await asyncio.sleep(0.01)
+        start = time.monotonic()
+        await rl.wait_if_needed("fast-model")
+        elapsed = time.monotonic() - start
+        task.cancel()
+        assert elapsed < 0.1
+
+    asyncio.run(check())

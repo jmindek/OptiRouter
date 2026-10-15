@@ -23,10 +23,10 @@ class RateLimiter:
         async with self._lock:
             now = time.monotonic()
             until = self._backoff_until[model]
-            if until > now:
-                delay = until - now
-                logger.debug(f"Rate limited {model}: waiting {delay:.1f}s")
-                await asyncio.sleep(delay)
+            delay = max(0.0, until - now)
+        if delay > 0:
+            logger.debug(f"Rate limited {model}: waiting {delay:.1f}s")
+            await asyncio.sleep(delay)
 
     def record_429(self, model: str) -> None:
         """Record a 429 and schedule next retry with exponential backoff + jitter."""

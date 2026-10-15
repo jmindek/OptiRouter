@@ -32,15 +32,13 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_cron(expr: str) -> dict:
-    """Parse cron expression to APScheduler kwargs."""
+    """Parse 5-field cron expression to APScheduler kwargs."""
     parts = expr.strip().split()
-    return {
-        "minute": parts[0],
-        "hour": parts[1],
-        "day": parts[2],
-        "month": parts[3],
-        "day_of_week": parts[4],
-    }
+    if len(parts) != 5:
+        raise ValueError(
+            f"Expected 5-field cron expression (minute hour day month day_of_week), got: '{expr}'"
+        )
+    return dict(zip(["minute", "hour", "day", "month", "day_of_week"], parts))
 
 
 @asynccontextmanager
@@ -83,31 +81,8 @@ def _build_forward_body(
 ) -> dict:
     """Build the JSON body to forward to OpenRouter, preserving all original fields."""
     msg_list = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages]
-    body: dict = {"model": model, "messages": msg_list, "stream": stream}
-    if request.temperature is not None:
-        body["temperature"] = request.temperature
-    if request.max_tokens is not None:
-        body["max_tokens"] = request.max_tokens
-    if request.tools is not None:
-        body["tools"] = request.tools
-    if request.tool_choice is not None:
-        body["tool_choice"] = request.tool_choice
-    if request.logprobs is not None:
-        body["logprobs"] = request.logprobs
-    if request.top_logprobs is not None:
-        body["top_logprobs"] = request.top_logprobs
-    if request.stop is not None:
-        body["stop"] = request.stop
-    if request.presence_penalty is not None:
-        body["presence_penalty"] = request.presence_penalty
-    if request.frequency_penalty is not None:
-        body["frequency_penalty"] = request.frequency_penalty
-    if request.response_format is not None:
-        body["response_format"] = request.response_format
-    if request.seed is not None:
-        body["seed"] = request.seed
-    if request.user is not None:
-        body["user"] = request.user
+    body = request.model_dump(exclude_none=True, exclude={"messages"})
+    body.update({"model": model, "messages": msg_list, "stream": stream})
     return body
 
 
@@ -264,10 +239,10 @@ async def forward_to_openrouter(
                 await client.aclose()
             raise
 
-    for attempt in range(max_retries):
-        await rate_limiter.wait_if_needed(model)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for attempt in range(max_retries):
+            await rate_limiter.wait_if_needed(model)
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
             try:
                 resp = await client.post(
                     f"{api_base}/v1/chat/completions",
@@ -331,8 +306,12 @@ async def chat_completions(request: ChatCompletionRequest):
                 else:
                     model = settings.static_fallback
 
-            # Check if selected model is still discounted
-            if models and not model_in_inventory(model, models):
+            # Check if selected model is still discounted (skip when deliberately using static fallback)
+            if (
+                models
+                and model != settings.static_fallback
+                and not model_in_inventory(model, models)
+            ):
                 model, error = handle_model_handoff(model, models)
                 if error:
                     raise HTTPException(status_code=400, detail=error)

@@ -116,7 +116,7 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 ## Current State
 
 ### Tests
-- **86 tests, all passing.** `uv run pytest`.
+- **88 tests, all passing.** `uv run pytest`.
 - Coverage: router (requirements, filtering, decision parsing), inventory sweep (non-chat filtering, cache fallback), cache save/load, model validation, rate limiter, handoff modes, P0 regressions, Langfuse exporter.
 - `uv run pyright src/` reports 0 errors.
 
@@ -149,11 +149,13 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 5. **Non-streaming response wrapping** — response is passed through unchanged, preserving tool calls, logprobs, and the full OpenAI schema.
 6. **Category keyword map** — removed. The decision model picks from the real candidate pool.
 7. **Inventory health check** — `/healthz` reports cache age and model count.
-8. **Request field passthrough** — temperature, max_tokens, tools, logprobs and the rest are forwarded.
+8. **Request field passthrough** — temperature, max_tokens, tools, logprobs and the rest are forwarded via `model_dump(exclude_none=True)`.
 9. **Playwright scraper** — deleted; the `/endpoints` sweep replaces it.
 10. **Stream/non-stream duplication** — the 429 retry/backoff policy was duplicated across both transports; it now lives in `_apply_rate_limit_policy()` with a shared test.
 11. **Shortlist cap and rank-sum bias** — removed `MAX_CANDIDATES` and `_rank_candidates`; all eligible candidates are sent to the decision model.
 12. **Transcript bias** — removed `_render_state` and `_truncate_middle`; the decision model sees only weights and preference, not the user prompt.
+13. **RateLimiter lock scope** — lock is released before `asyncio.sleep`, so a throttled model never blocks concurrent requests for unthrottled models.
+14. **Dockerfile dependency list** — Dockerfile installs directly from `pyproject.toml`.
 
 ### Pending Issues & Open Questions
 
@@ -162,18 +164,12 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 
 2. **Validate-on-forward (deferred)** — the pool is up to 1h stale, so an in-flight model's discount can change unnoticed within that window. A per-model `/endpoints` check with a short TTL would catch it for ~1–2s/day. Deferred by choice; handoff covers the next-request case.
 
-3. **RateLimiter lock scope** — `wait_if_needed` holds a lock across the wait, which can block concurrent requests for unthrottled models.
-
-4. **Dockerfile dependency list** — the Dockerfile installs dependencies by name rather than from `pyproject.toml`, so the two can drift.
-
 ---
 
 ## Active Requirements for Next Iteration
 
 ### Medium Priority
-1. **Fix RateLimiter lock scope** — do not hold the lock across `asyncio.sleep`.
-2. **Build dependencies from `pyproject.toml`** in the Dockerfile so the two cannot drift.
-3. **Decision model pluggability** — the decision model is now pluggable via config; local open-weight models are the next step.
+1. **Decision model pluggability** — the decision model is now pluggable via config; local open-weight models are the next step.
 
 ---
 
