@@ -20,6 +20,9 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Path of the hosted Decisions API, relative to the OpenRouter host root.
+DECISIONS_PATH = "/api/alpha/decisions"
+
 
 class DecisionModelProvider(abc.ABC):
     """Interface for decision model backends."""
@@ -50,10 +53,13 @@ class OpenRouterProvider(DecisionModelProvider):
         return "openrouter"
 
     async def call(self, payload: dict[str, Any]) -> dict[str, Any]:
-        api_base = settings.api_base
         api_key = settings.api_key
 
-        endpoint = f"{api_base.rstrip('/')}/api/alpha/decisions"
+        # The Decisions API lives on the OpenRouter host root, but ROUTER_API_BASE
+        # conventionally includes the OpenAI-style /api/v1 suffix. Strip it, or
+        # the path becomes /api/v1/api/alpha/decisions and 404s.
+        api_base = settings.api_base.rstrip("/").removesuffix("/api/v1")
+        endpoint = f"{api_base}{DECISIONS_PATH}"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 endpoint,
