@@ -1,8 +1,10 @@
-# OptiRoute
+# OptiRouter
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-FF5E5B?style=flat&logo=kofi&logoColor=white)](https://ko-fi.com/jerrymindek)
 
-Routes AI requests to discounted OpenRouter models. Uses a decision model to pick the best discounted candidate for each request, guided by user-configurable feature weights.
+Weighted feature router for optimal inference — maximize whatever you value most.
+
+I built this after noticing how many excellent models are discounted on OpenRouter — but they rotate so frequently that sitting on one model and expecting to pay that low price forever isn't realistic. OptiRouter scores each candidate against configurable weights (discount, cost, latency, throughput, uptime, coding index, etc.) and picks the best fit for every request. Provider-agnostic by design; OpenRouter is step 1, with support for any provider coming soon.
 
 ## Quick Start
 
@@ -23,11 +25,11 @@ docker compose up --build
 | `ROUTER_API_BASE` | `https://openrouter.ai/api/v1` | API base URL for the decision model |
 | `ROUTER_INVENTORY_URL` | `https://openrouter.ai/api/v1` | OpenRouter API URL for fetching discounted models |
 | `ROUTER_MODE` | `auto` | Routing mode: cloud, local, auto |
-| `ROUTER_OMLX_BASE` | `http://127.0.0.1:8000` | Local oMLX fallback base URL |
+| `ROUTER_OMLX_BASE` | `http://127.0.0.1:8000` | Local oMLX decision model base URL (used when ROUTER_MODE=local or no API key) |
 | `ROUTER_MIN_DISCOUNT` | `0.25` | Minimum discount threshold (0.0–1.0) |
 | `ROUTER_MIN_CONFIDENCE` | `0.30` | Minimum decision-model confidence to accept a pick; below it the router picks by `ROUTER_LOW_CONFIDENCE_CHOICE` |
 | `ROUTER_LOW_CONFIDENCE_CHOICE` | `discount` | Feature used to pick the best candidate when confidence < `ROUTER_MIN_CONFIDENCE`: `discount`, `cost`, `latency`, `throughput`, `uptime`, `context_window`, `reasoning`, `composite_score`, `coding_index`, `intelligence_index`, `agentic_index` |
-| `ROUTER_PREFERENCE` | `cost` | Tie-breaker handed to the decision model: `cost`, `quality`, or `none` |
+| `ROUTER_PREFERENCE` | `cost` | Tie-breaker passed to the decision model: `cost`, `quality`, or `none` |
 | `ROUTER_FALLBACK_MODE` | `static` | `static` = auto-fallback to `ROUTER_STATIC_FALLBACK`; `halt` = return 503 |
 | `ROUTER_STATIC_FALLBACK` | `openrouter/deepseek/deepseek-v3.1` | Fallback model when routing fails |
 | `ROUTER_MODEL_HANDOFF` | `next_best` | Behavior when selected model falls off discount list: `stop`, `next_best`, `keep_current` |
@@ -43,6 +45,10 @@ docker compose up --build
 | `ROUTER_TRACE_ROUTING_DETAIL` | `true` | Record the routing decision (model, confidence, reason) as trace output |
 | `LANGFUSE_PUBLIC_KEY` | | Langfuse public key (`pk-lf-...`) |
 | `LANGFUSE_SECRET_KEY` | | Langfuse secret key (`sk-lf-...`) |
+
+## Local Decision Models
+
+You can host your own decision model locally instead of using OpenRouter. Set `ROUTER_MODE=local` and the router will call your local oMLX server at `ROUTER_OMLX_BASE`. The router supports any provider that speaks the OpenRouter Decisions API or the TypeSafe System One protocol.
 
 ## Model Handoff
 
@@ -139,12 +145,15 @@ Client → /v1/chat/completions → classify_request() → select discounted mod
 - **Forwarding**: Proxies to OpenRouter with streaming support and rate limiting.
 - **Rate Limiter**: Reactive — tracks 429 responses and backs off per-model.
 
+## Support
+
+If this project is useful, consider [buying me a coffee](https://ko-fi.com/jerrymindek).
+
 ## License
 
 [MIT](LICENSE)
 
-If this project is useful, consider [buying me a coffee](https://ko-fi.com/jerrymindek).
-
+## Testing
 
 ```bash
 uv sync
@@ -156,9 +165,9 @@ uv run pyright src/
 
 Live testing against the real discounted pool informed the defaults.
 
-- **`ROUTER_MIN_DISCOUNT=0.25`**. The threshold controls which models enter the pool. Lower values include more candidates (and more competition for the decision model). The default was 0.50 but was lowered to 0.25 after the inventory sweep was fixed to scan all endpoints — models with a discount on a non-first endpoint were previously missed.
+- **`ROUTER_MIN_DISCOUNT=0.25`** The threshold controls which models enter the pool. Lower values include more candidates (and more competition for the decision model).
 
-- **`ROUTER_WEIGHTS`**. The user-configurable feature weights guide the decision model's selection. All weights are passed to the decision model as evaluation guidance; the decision model weighs them in context.
+- **`ROUTER_WEIGHTS`** The user-configurable feature weights guide the decision model's selection. All weights are passed to the decision model as evaluation guidance; the decision model weighs them in context.
   Available features:
   - `discount` (% off)
   - `cost` / `price` (effective blended USD/Mtok based on 75% input, 25% output)
@@ -170,12 +179,9 @@ Live testing against the real discounted pool informed the defaults.
   - `composite_score` / `model_tier` (benchmark average with heuristic model tier fallback)
   - `coding_index`, `intelligence_index`, `agentic_index` (Artificial Analysis scores)
 
-- **`ROUTER_MIN_CONFIDENCE=0.30`.** Confidence for model selection sits
-  roughly 0.30–0.55 with a good pool. A 0.55 bar abstained often; 0.30 leaves
-  room for the crossing cases while still rejecting the near-coin-flip
-  answers a bad pool produces.
+- **`ROUTER_MIN_CONFIDENCE=0.30`** Confidence for model selection sits roughly 0.30–0.55 with a good pool. A 0.55 bar abstained often; 0.30 leaves room for the crossing cases while still rejecting the near-coin-flip answers a bad pool produces.
 
-- **`ROUTER_PREFERENCE=cost`.** Of the tie-breakers tested, only cost raised
+- **`ROUTER_PREFERENCE=cost`** Of the tie-breakers tested, only cost raised
   confidence (0.30 → 0.35 on a large pool). Open-weight and closed-weight
   preferences *lowered* it, and a reasoning preference lowered it and was
   ignored. A detailed judging rubric lowered it too. A clean question with one

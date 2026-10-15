@@ -49,7 +49,7 @@ def _parse_cron(expr: str) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_telemetry()
-    logger.info("Starting optiroute...")
+    logger.info("Starting OptiRouter...")
     await refresh_inventory()
 
     scheduler = AsyncIOScheduler()
