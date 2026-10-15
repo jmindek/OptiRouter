@@ -161,9 +161,9 @@ uv run pyright src/
 
 Live testing against the real discounted pool informed the defaults.
 
-- **`ROUTER_MIN_DISCOUNT=0.25`**. The threshold controls which models enter the pool. Lower values include more candidates (and more competition for the decision model). The default was 0.50 but was lowered to 0.25 after the inventory sweep was fixed to scan all endpoints — models with a discount on a non-first endpoint were previously missed.
+- **`ROUTER_MIN_DISCOUNT=0.25`** The threshold controls which models enter the pool. Lower values include more candidates (and more competition for the decision model).
 
-- **`ROUTER_WEIGHTS`**. The user-configurable feature weights guide the decision model's selection. All weights are passed to the decision model as evaluation guidance; the decision model weighs them in context.
+- **`ROUTER_WEIGHTS`** The user-configurable feature weights guide the decision model's selection. All weights are passed to the decision model as evaluation guidance; the decision model weighs them in context.
   Available features:
   - `discount` (% off)
   - `cost` / `price` (effective blended USD/Mtok based on 75% input, 25% output)
@@ -175,10 +175,7 @@ Live testing against the real discounted pool informed the defaults.
   - `composite_score` / `model_tier` (benchmark average with heuristic model tier fallback)
   - `coding_index`, `intelligence_index`, `agentic_index` (Artificial Analysis scores)
 
-- **`ROUTER_MIN_CONFIDENCE=0.30`.** Confidence for model selection sits
-  roughly 0.30–0.55 with a good pool. A 0.55 bar abstained often; 0.30 leaves
-  room for the crossing cases while still rejecting the near-coin-flip
-  answers a bad pool produces.
+- **`ROUTER_MIN_CONFIDENCE=0.30`** Confidence for model selection sits roughly 0.30–0.55 with a good pool. A 0.55 bar abstained often; 0.30 leaves room for the crossing cases while still rejecting the near-coin-flip answers a bad pool produces.
 
 - **`ROUTER_PREFERENCE=cost`.** Of the tie-breakers tested, only cost raised
   confidence (0.30 → 0.35 on a large pool). Open-weight and closed-weight
