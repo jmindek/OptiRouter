@@ -180,6 +180,48 @@ class TestSweepIntegration(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual([m.id for m in models], ["cached/model"])
 
+    def test_pick_endpoint_respects_configured_floors(self):
+        from src.inventory import _pick_endpoint
+
+        eps = [
+            {
+                "provider_name": "HighDiscountLowUptime",
+                "pricing": {"discount": 0.8},
+                "latency_last_30m": {"p50": 400.0},
+                "uptime_last_1d": 90.0,
+                "perf_last_30m_by_workload": {
+                    "text_generation": {"request_count": 500}
+                },
+            },
+            {
+                "provider_name": "ModerateDiscountHealthy",
+                "pricing": {"discount": 0.5},
+                "latency_last_30m": {"p50": 500.0},
+                "uptime_last_1d": 98.0,
+                "perf_last_30m_by_workload": {
+                    "text_generation": {"request_count": 200}
+                },
+            },
+        ]
+
+        # Default floor (uptime >= 95, reqs >= 100) picks ModerateDiscountHealthy
+        with (
+            patch("src.inventory.settings.min_endpoint_uptime", 95.0),
+            patch("src.inventory.settings.min_endpoint_requests", 100),
+        ):
+            picked = _pick_endpoint(eps)
+            assert picked is not None
+            self.assertEqual(picked["provider_name"], "ModerateDiscountHealthy")
+
+        # Lowered uptime floor (uptime >= 85) allows HighDiscountLowUptime
+        with (
+            patch("src.inventory.settings.min_endpoint_uptime", 85.0),
+            patch("src.inventory.settings.min_endpoint_requests", 100),
+        ):
+            picked = _pick_endpoint(eps)
+            assert picked is not None
+            self.assertEqual(picked["provider_name"], "HighDiscountLowUptime")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -60,6 +62,16 @@ class Settings(BaseSettings):
         default=131072, validation_alias="ROUTER_MIN_CONTEXT_LENGTH"
     )
 
+    # Endpoint trustworthiness floors for inventory sweep.
+    # Endpoints below these floors are not trustworthy enough to record perf
+    # numbers from (falling back to max discount overall only when none qualify).
+    min_endpoint_uptime: float = Field(
+        default=95.0, validation_alias="ROUTER_MIN_ENDPOINT_UPTIME"
+    )
+    min_endpoint_requests: int = Field(
+        default=100, validation_alias="ROUTER_MIN_ENDPOINT_REQUESTS"
+    )
+
     # Feature weights for model decision evaluation
     # Accepted format: string "discount=0.4,latency=0.2,..." or dict
     weights: dict[str, float] = Field(
@@ -99,7 +111,9 @@ class Settings(BaseSettings):
     #   truncated - record a clipped prompt as input, plus the decision (default)
     #   full      - record the whole prompt
     # Prompts are user content, so the default deliberately clips them.
-    trace_input: str = Field(default="truncated", validation_alias="ROUTER_TRACE_INPUT")
+    trace_input: Literal["none", "decision", "truncated", "full"] = Field(
+        default="truncated", validation_alias="ROUTER_TRACE_INPUT"
+    )
 
     # Character cap when trace_input is "truncated".
     trace_input_chars: int = Field(

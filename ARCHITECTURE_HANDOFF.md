@@ -31,7 +31,7 @@ The `/models` endpoint does NOT include discount info. Discount is only in `/mod
 
 ### Key Insight: Discounts Are Per-Endpoint
 
-A model may have 40+ providers serving it on OpenRouter, each with its own pricing and discount. `endpoints[0]` may show 0% while another endpoint has 50%+, so the router scans all endpoints and picks a trustworthy one (uptime ≥95%, request count ≥100) with the largest discount.
+A model may have 40+ providers serving it on OpenRouter, each with its own pricing and discount. `endpoints[0]` may show 0% while another endpoint has 50%+, so the router scans all endpoints and picks a trustworthy one (uptime ≥ `ROUTER_MIN_ENDPOINT_UPTIME`, request count ≥ `ROUTER_MIN_ENDPOINT_REQUESTS`) with the largest discount.
 
 ### Key Insight: The Decision Model Is Not a Chat Model
 
@@ -109,14 +109,14 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 ### 6. Config (`src/config.py`)
 - Pydantic Settings with env var aliases.
 - All vars prefixed with `ROUTER_` (except `OPENROUTER_API_KEY`).
-- `min_discount` (default 0.25), `min_confidence` (default 0.30), `min_context_length` (default 131072), `weights` (default: discount=0.4, latency=0.2, uptime=0.2, coding_index=0.2, intelligence_index=0.0, agentic_index=0.0), `preference` (cost/quality/none).
+- `min_discount` (default 0.25), `min_confidence` (default 0.30), `min_context_length` (default 131072), `min_endpoint_uptime` (default 95.0), `min_endpoint_requests` (default 100), `weights` (default: discount=0.4, latency=0.2, uptime=0.2, coding_index=0.2, intelligence_index=0.0, agentic_index=0.0), `preference` (cost/quality/none).
 
 ---
 
 ## Current State
 
 ### Tests
-- **84 tests, all passing.** `uv run pytest`.
+- **86 tests, all passing.** `uv run pytest`.
 - Coverage: router (requirements, filtering, decision parsing), inventory sweep (non-chat filtering, cache fallback), cache save/load, model validation, rate limiter, handoff modes, P0 regressions, Langfuse exporter.
 - `uv run pyright src/` reports 0 errors.
 

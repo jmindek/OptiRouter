@@ -240,3 +240,10 @@ class TestTraceContentPolicy(unittest.TestCase):
             _record_trace_content(span, [], "static-fallback", None)
         keys = [c.args[0] for c in span.set_attribute.call_args_list]
         self.assertNotIn("output", keys)
+
+    def test_invalid_trace_input_rejected_by_settings(self):
+        from pydantic import ValidationError
+        from src.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(ROUTER_TRACE_INPUT="banana")  # type: ignore[call-arg]

@@ -31,6 +31,8 @@ docker compose up --build
 | `ROUTER_CACHE_FILE` | `data/models.json` | Path to cached discounted models |
 | `ROUTER_REFRESH_CRON` | `0 * * * *` | Cron schedule for inventory refresh (default: hourly) |
 | `ROUTER_MIN_CONTEXT_LENGTH` | `131072` | Minimum context length in tokens; models with shorter context are excluded |
+| `ROUTER_MIN_ENDPOINT_UPTIME` | `95.0` | Minimum 1d endpoint uptime (%) to consider endpoint stats trustworthy |
+| `ROUTER_MIN_ENDPOINT_REQUESTS` | `100` | Minimum 30m endpoint request count to consider endpoint latency trustworthy |
 | `ROUTER_WEIGHTS` | `{"discount": 0.4, "latency": 0.2, "uptime": 0.2, "coding_index": 0.2, "intelligence_index": 0.0, "agentic_index": 0.0}` | Feature weights for the decision model. JSON string or dict. Features missing from a candidate are treated as 0. |
 | `LANGFUSE_HOST` | | Langfuse base URL (e.g. `http://localhost:3000`). Set with the two keys below to send traces to Langfuse; otherwise traces print to console |
 | `ROUTER_TRACE_INPUT` | `truncated` | What a trace records as input: `none`, `decision`, `truncated`, or `full` |

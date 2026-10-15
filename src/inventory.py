@@ -151,13 +151,6 @@ async def _fetch_via_endpoints(
     return discounted
 
 
-# Endpoints below these floors are not trustworthy enough to record numbers
-# from. uptime 1d under 95% means the provider is failing requests; a request
-# count under 100 makes the latency figure noise rather than a measurement.
-MIN_ENDPOINT_UPTIME = 95.0
-MIN_ENDPOINT_REQUESTS = 100
-
-
 def _endpoint_perf(ep: dict) -> dict:
     """Pull serving facts out of one endpoint entry."""
     wl = (ep.get("perf_last_30m_by_workload") or {}).get("text_generation") or {}
@@ -188,8 +181,8 @@ def _pick_endpoint(endpoints: list[dict]) -> dict | None:
         e
         for e in endpoints
         if (_endpoint_perf(e)["latency_p50_ms"] is not None)
-        and (_endpoint_perf(e)["uptime_pct"] or 0) >= MIN_ENDPOINT_UPTIME
-        and _endpoint_perf(e)["request_count"] >= MIN_ENDPOINT_REQUESTS
+        and (_endpoint_perf(e)["uptime_pct"] or 0) >= settings.min_endpoint_uptime
+        and _endpoint_perf(e)["request_count"] >= settings.min_endpoint_requests
     ]
     return max(healthy or endpoints, key=discount_of)
 
