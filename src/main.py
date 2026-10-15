@@ -132,7 +132,7 @@ async def _wait_for_server(url: str, timeout: float = 60) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_telemetry()
-    logger.info("Starting model router...")
+    logger.info("Starting optiroute...")
     await refresh_inventory()
 
     # Start local inference server if needed
