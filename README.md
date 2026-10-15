@@ -1,6 +1,8 @@
 # OptiRouter
 
-Routes AI requests to discounted OpenRouter models. Uses a decision model to pick the best discounted candidate for each request, guided by user-configurable feature weights.
+Weighted feature router for optimal inference — maximize whatever you value most.
+
+I built this after noticing how many excellent models are discounted on OpenRouter — but they rotate so frequently that sitting on one model and expecting to pay that low price forever isn't realistic. OptiRouter scores each candidate against configurable weights (discount, cost, latency, throughput, uptime, coding index, etc.) and picks the best fit for every request. Provider-agnostic by design; OpenRouter is step 1, with support for any provider coming soon.
 
 ## Quick Start
 
