@@ -141,12 +141,15 @@ Client → /v1/chat/completions → classify_request() → select discounted mod
 - **Forwarding**: Proxies to OpenRouter with streaming support and rate limiting.
 - **Rate Limiter**: Reactive — tracks 429 responses and backs off per-model.
 
+## Support
+
+If this project is useful, consider [buying me a coffee](https://ko-fi.com/jerrymindek).
+
 ## License
 
 [MIT](LICENSE)
 
-If this project is useful, consider [buying me a coffee](https://ko-fi.com/jerrymindek).
-
+## Testing
 
 ```bash
 uv sync
