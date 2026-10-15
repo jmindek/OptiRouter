@@ -1,5 +1,5 @@
 services:
-  model-router:
+  optiroute:
     build: .
     ports:
       - "8080:8080"
