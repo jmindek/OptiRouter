@@ -17,9 +17,8 @@ See: https://openrouter.ai/docs/api/api-reference/alphadecisions
 import logging
 from dataclasses import dataclass
 
-import httpx
-
 from src.config import settings
+from src.decision_providers import DecisionModelProvider, get_provider
 from src.models import ModelInfo
 
 logger = logging.getLogger(__name__)
@@ -274,11 +273,6 @@ async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDe
         logger.warning("No models available for routing")
         return RoutingDecision(None, 0.0, "no_models")
 
-    api_base, api_key = _get_router_api()
-    if not api_key:
-        logger.error("No router API key configured")
-        return RoutingDecision(None, 0.0, "no_api_key")
-
     criteria = _build_criteria(models)
     if not criteria:
         return RoutingDecision(None, 0.0, "no_models")
@@ -324,30 +318,16 @@ async def classify_request(messages: list, models: list[ModelInfo]) -> RoutingDe
         },
     }
 
-    endpoint = f"{_decisions_base(api_base)}{DECISIONS_PATH}"
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                endpoint,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-    except httpx.HTTPError as e:
+        provider = get_provider()
+        logger.info(f"Using decision model provider: {provider.name}")
+        data = await provider.call(payload)
+    except ValueError as e:
+        logger.error(f"Decision model failed: {e}")
+        return RoutingDecision(None, 0.0, "http_error")
+    except Exception as e:
         logger.error(f"Decision model request failed: {e}")
         return RoutingDecision(None, 0.0, "http_error")
-
-    if resp.status_code != 200:
-        logger.error(f"Decision model failed: {resp.status_code} {resp.text}")
-        return RoutingDecision(None, 0.0, "http_error")
-
-    try:
-        data = resp.json()
-    except ValueError as e:
-        logger.error(f"Decision model returned invalid JSON: {e}")
-        return RoutingDecision(None, 0.0, "parse_error")
 
     return _parse_decision(data)
 
@@ -463,24 +443,3 @@ def pick_by_feature(models: list[ModelInfo], feature: str) -> ModelInfo:
         )
     # Default: "discount"
     return max(models, key=lambda m: (m.discount_pct, -m.effective_cost))
-
-
-def _decisions_base(api_base: str) -> str:
-    """Normalize the API base to the OpenRouter host root.
-
-    ROUTER_API_BASE defaults to ``https://openrouter.ai/api/v1`` but the
-    Decisions API lives at ``https://openrouter.ai/api/alpha/decisions``.
-    """
-    return api_base.rstrip("/").removesuffix("/api/v1")
-
-
-def _get_router_api() -> tuple[str, str]:
-    """Get decision-model API base and key based on mode."""
-    if settings.mode == "local":
-        return settings.omlx_base, ""
-    elif settings.mode == "cloud":
-        return settings.api_base, settings.api_key
-    else:
-        if settings.api_key:
-            return settings.api_base, settings.api_key
-        return settings.omlx_base, ""

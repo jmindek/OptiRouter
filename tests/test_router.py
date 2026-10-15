@@ -13,6 +13,7 @@ from src.router import (
     _request_requirements,
     classify_request,
     render_transcript,
+    DECISIONS_PATH,
 )
 
 MODELS = [
@@ -57,6 +58,7 @@ CLOUD_SETTINGS = {
     "api_base": "https://openrouter.ai/api/v1",
     "api_key": "sk-test",
     "mode": "cloud",
+    "decision_model_provider": "openrouter",
     "min_confidence": 0.30,
     "preference": "cost",
     "min_context_length": 131072,
@@ -76,6 +78,11 @@ def _patch_settings():
     for k, v in CLOUD_SETTINGS.items():
         setattr(m, k, v)
     return patch("src.router.settings", m)
+
+
+def _patch_provider(mock_provider):
+    """Patch get_provider to return a mock provider."""
+    return patch("src.router.get_provider", return_value=mock_provider)
 
 
 class TestRenderTranscript(unittest.TestCase):
@@ -330,13 +337,16 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.reason, "no_models")
 
     async def test_no_api_key(self):
-        with patch("src.router.settings") as m:
-            m.mode = "auto"
-            m.api_key = ""
-            m.omlx_base = "http://localhost:8000"
+        # With provider interface, no API key means the OpenRouter provider
+        # will fail when called. We mock the provider to simulate this.
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(side_effect=ValueError("No API key configured"))
+        ctx = _patch_provider(mock_provider)
+        with ctx:
             d = await classify_request([ChatMessage(role="user", content="hi")], MODELS)
         self.assertIsNone(d.model_id)
-        self.assertEqual(d.reason, "no_api_key")
+        self.assertEqual(d.reason, "http_error")
 
     async def test_success_posts_correct_shape(self):
         body = {
@@ -350,7 +360,10 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
                 }
             },
         }
-        ctx, mock_client = _patched_client(_response(body))
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(return_value=body)
+        ctx = _patch_provider(mock_provider)
         with ctx, _patch_settings():
             d = await classify_request(
                 [ChatMessage(role="user", content="summarize this")], MODELS
@@ -359,10 +372,9 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.model_id, "google/gemini-2.0-flash")
         self.assertEqual(d.reason, "ok")
 
-        # Verify URL and payload shape.
-        args, kwargs = mock_client.post.call_args
-        self.assertEqual(args[0], "https://openrouter.ai/api/alpha/decisions")
-        payload = kwargs["json"]
+        # Verify the provider was called with correct payload shape.
+        args, kwargs = mock_provider.call.call_args
+        payload = args[0]
         self.assertEqual(payload["model"], "typesafe/jev-1.13")
         self.assertNotIn("request", payload["state"])  # transcript not sent
         self.assertNotIn("task", payload["state"])  # no keyword tag
@@ -390,32 +402,36 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
                 }
             }
         }
-        ctx, mock_client = _patched_client(_response(body))
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(return_value=body)
+        ctx = _patch_provider(mock_provider)
         with ctx, _patch_settings() as m:
             m.preference = "none"
             await classify_request([ChatMessage(role="user", content="hi")], MODELS)
-        _, kwargs = mock_client.post.call_args
-        self.assertNotIn(
-            "Tie-breaker", kwargs["json"]["questions"]["target"]["instructions"]
-        )
-        self.assertEqual(kwargs["json"]["state"]["preference"], "none")
+        payload = mock_provider.call.call_args[0][0]
+        self.assertNotIn("Tie-breaker", payload["questions"]["target"]["instructions"])
+        self.assertEqual(payload["state"]["preference"], "none")
 
     async def test_http_error(self):
-        ctx, _ = _patched_client(_response({"error": "boom"}, status=400))
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(side_effect=ValueError("HTTP 400: boom"))
+        ctx = _patch_provider(mock_provider)
         with ctx, _patch_settings():
             d = await classify_request([ChatMessage(role="user", content="hi")], MODELS)
         self.assertIsNone(d.model_id)
         self.assertEqual(d.reason, "http_error")
 
     async def test_invalid_json(self):
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.json.side_effect = ValueError("not json")
-        ctx, _ = _patched_client(resp)
+        mock_provider = MagicMock()
+        mock_provider.name = "openrouter"
+        mock_provider.call = AsyncMock(side_effect=ValueError("parse error"))
+        ctx = _patch_provider(mock_provider)
         with ctx, _patch_settings():
             d = await classify_request([ChatMessage(role="user", content="hi")], MODELS)
         self.assertIsNone(d.model_id)
-        self.assertEqual(d.reason, "parse_error")
+        self.assertEqual(d.reason, "http_error")
 
 
 class TestPickByFeature(unittest.TestCase):

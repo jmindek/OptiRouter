@@ -21,10 +21,33 @@ class Settings(BaseSettings):
     # Routing mode: cloud, local, auto
     mode: str = Field(default="auto", validation_alias="ROUTER_MODE")
 
+    # Decision model provider: openrouter, ollama, vllm, systemone
+    decision_model_provider: str = Field(
+        default="openrouter", validation_alias="ROUTER_DECISION_MODEL_PROVIDER"
+    )
+
     # Local oMLX fallback
     omlx_base: str = Field(
         default="http://127.0.0.1:8000", validation_alias="ROUTER_OMLX_BASE"
     )
+
+    # Ollama decision model config
+    ollama_base: str = Field(
+        default="http://127.0.0.1:11434", validation_alias="ROUTER_OLLAMA_BASE"
+    )
+    ollama_model: str = Field(default="", validation_alias="ROUTER_OLLAMA_MODEL")
+
+    # vLLM decision model config
+    vllm_base: str = Field(
+        default="http://127.0.0.1:8000", validation_alias="ROUTER_VLLM_BASE"
+    )
+    vllm_model: str = Field(default="", validation_alias="ROUTER_VLLM_MODEL")
+
+    # SystemOne (kev/ollaya/jev) decision model config
+    systemone_base: str = Field(
+        default="http://127.0.0.1:8000", validation_alias="ROUTER_SYSTEMONE_BASE"
+    )
+    systemone_model: str = Field(default="", validation_alias="ROUTER_SYSTEMONE_MODEL")
 
     # Discount threshold (0.0-1.0)
     min_discount: float = Field(default=0.25, validation_alias="ROUTER_MIN_DISCOUNT")

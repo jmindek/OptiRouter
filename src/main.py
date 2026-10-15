@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,11 +47,98 @@ def _parse_cron(expr: str) -> dict:
     return dict(zip(["minute", "hour", "day", "month", "day_of_week"], parts))
 
 
+async def _start_local_inference_server() -> subprocess.Popen | None:
+    """Start a local inference server if the decision model provider requires one."""
+    provider = settings.decision_model_provider.lower()
+
+    if provider == "vllm":
+        model = settings.vllm_model or settings.model
+        base = settings.vllm_base
+        port = base.split(":")[-1].rstrip("/")
+
+        logger.info(f"Starting vLLM server for model: {model} on port {port}")
+        proc = subprocess.Popen(
+            [
+                "python",
+                "-m",
+                "vllm.entrypoints.openai.api_server",
+                "--model",
+                model,
+                "--port",
+                port,
+                "--max-model-len",
+                "8192",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Wait for server to be ready
+        await _wait_for_server(f"http://127.0.0.1:{port}", timeout=60)
+        return proc
+
+    elif provider == "ollama":
+        # Ollama typically runs as a system service; just check it's available
+        base = settings.ollama_base
+        port = base.split(":")[-1].rstrip("/")
+        logger.info(f"Checking Ollama availability on port {port}")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{base}/api/tags")
+                if resp.status_code == 200:
+                    logger.info("Ollama is available")
+                else:
+                    logger.warning(f"Ollama returned HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Ollama not reachable on port {port}: {e}")
+        return None
+
+    elif provider == "systemone":
+        # SystemOne servers (kev, ollaya, jevos) run as separate processes.
+        # Just verify the endpoint is reachable.
+        base = settings.systemone_base
+        port = base.split(":")[-1].rstrip("/")
+        logger.info(f"Checking SystemOne server availability on port {port}")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{base}/v1/systemone")
+                # /v1/systemone is POST-only, so a 405 still proves it is up.
+                if resp.status_code < 500:
+                    logger.info("SystemOne server is available")
+                else:
+                    logger.warning(f"SystemOne returned HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"SystemOne not reachable on port {port}: {e}")
+        return None
+
+    return None
+
+
+async def _wait_for_server(url: str, timeout: float = 60) -> None:
+    """Wait until the local server is ready or timeout."""
+    start = time.time()
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while time.time() - start < timeout:
+            try:
+                resp = await client.get(f"{url}/v1/models")
+                if resp.status_code == 200:
+                    logger.info(f"Server ready at {url}")
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+    raise RuntimeError(f"Server at {url} did not become ready within {timeout}s")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_telemetry()
     logger.info("Starting model router...")
     await refresh_inventory()
+
+    # Start local inference server if needed
+    local_proc = await _start_local_inference_server()
+    if local_proc:
+        app.state.local_server = local_proc
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -64,6 +152,15 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     yield
     scheduler.shutdown()
+    # Clean up local server
+    if local_proc:
+        logger.info("Stopping local inference server...")
+        local_proc.terminate()
+        try:
+            local_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            local_proc.kill()
+            local_proc.wait()
 
 
 async def refresh_inventory():

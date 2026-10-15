@@ -66,6 +66,76 @@ When the selected model falls off the discount list, the router handles it based
 
 7. **Handoff**: if the selected model falls off the discount list before the next refresh, `ROUTER_MODEL_HANDOFF` controls whether to stop, switch to the next best, or keep using it.
 
+## Local Decision Models
+
+The decision model can run locally using open-weight models instead of relying
+on a hosted API. Set `ROUTER_DECISION_MODEL_PROVIDER` to one of:
+
+| Provider | Description |
+|---|---|
+| `openrouter` | Hosted via OpenRouter (default) |
+| `ollama` | Local Ollama instance |
+| `vllm` | Local vLLM inference server |
+| `systemone` | Local `/v1/systemone` server (kev, ollaya, jevos) |
+
+### Ollama
+
+1. Install [Ollama](https://ollama.com) and pull a decision model:
+   ```bash
+   ollama pull typesafe/jev-1.13
+   ```
+2. Set in `.env`:
+   ```
+   ROUTER_DECISION_MODEL_PROVIDER=ollama
+   ROUTER_OLLAMA_MODEL=typesafe/jev-1.13
+   ```
+3. Ensure Ollama is running (`ollama serve` or the system service).
+
+### vLLM
+
+1. Install vLLM: `pip install vllm`
+2. Start a local server (the router will also start one automatically if `ROUTER_DECISION_MODEL_PROVIDER=vllm`):
+   ```bash
+   python -m vllm.entrypoints.openai.api_server --model typesafe/jev-1.13 --port 8000 --max-model-len 8192
+   ```
+3. Set in `.env`:
+   ```
+   ROUTER_DECISION_MODEL_PROVIDER=vllm
+   ROUTER_VLLM_MODEL=typesafe/jev-1.13
+   ROUTER_VLLM_BASE=http://127.0.0.1:8000
+   ```
+
+### SystemOne (kev / ollaya / jevos)
+
+The SystemOne provider speaks the `/v1/systemone` wire protocol, compatible with
+any server implementing the decision protocol:
+
+- **[kev](https://github.com/kev/kev)** — Qwen-backed, 0.8B–27B
+- **[ollaya](https://github.com/ollaya/ollaya)** — Dedicated decision model server
+- **[jev](https://github.com/jev/jev)** — GGUF, CPU-friendly
+
+1. Start your preferred SystemOne server:
+   ```bash
+   # Example with kev
+   ./kev --model typesafe/jev-1.13 --port 8000
+   ```
+2. Set in `.env`:
+   ```
+   ROUTER_DECISION_MODEL_PROVIDER=systemone
+   ROUTER_SYSTEMONE_MODEL=typesafe/jev-1.13
+   ROUTER_SYSTEMONE_BASE=http://127.0.0.1:8000
+   ```
+
+**Advantage over Ollama/vLLM:** Returns calibrated confidence scores and typed
+responses — no heuristic parsing needed.
+
+### Notes
+
+- Running locally removes dependency on OpenRouter availability and latency for the routing step.
+- Local providers return a fixed confidence of 0.5 since they don't provide calibrated probabilities. The router gates on `ROUTER_MIN_CONFIDENCE` (default 0.30), so local picks are accepted.
+- The router translates the Decisions API contract (`{model, state, questions}` → typed `answers`) to the local provider's chat format automatically.
+- When `ROUTER_OLLAMA_MODEL` or `ROUTER_VLLM_MODEL` is empty, the router uses the value of `ROUTER_MODEL`.
+
 ## Telemetry
 
 The router emits OpenTelemetry traces and metrics. **Traces go to Langfuse when
@@ -133,7 +203,7 @@ Client → /v1/chat/completions → classify_request() → select discounted mod
 
 - **Inventory**: Fetches discounted models from OpenRouter `/models` and `/models/{id}/endpoints` endpoints concurrently (semaphore 10). Discount data is per-endpoint — the router scans all endpoints per model and picks the best trustworthy one. Cached to `data/models.json`. Refreshed on cron schedule.
 - **Router**: Derives hard requirements from the transcript (image, tools, context), filters the candidate pool, and sends the full eligible set to the decision model with user-configured feature weights. No shortlist, no ranking bias — the decision model sees all candidates and weighs them according to the configured weights.
-- **Decision model**: Called via OpenRouter Decisions API (`POST /api/alpha/decisions`). The decision model is pluggable — Jev today, local open-weight models later. Returns a typed answer with a calibrated `confidence`.
+- **Decision model**: Pluggable provider interface. Default is OpenRouter Decisions API (`POST /api/alpha/decisions`), but also supports local backends (Ollama, vLLM). Returns a typed answer with a calibrated `confidence` (or 0.5 for local providers).
 - **Forwarding**: Proxies to OpenRouter with streaming support and rate limiting.
 - **Rate Limiter**: Reactive — tracks 429 responses and backs off per-model.
 

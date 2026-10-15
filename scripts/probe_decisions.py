@@ -1,8 +1,10 @@
-"""Live probe of the OpenRouter Decisions API.
+"""Live probe of the configured decision-model provider.
 
 Sends one real request matching the router's current payload structure
 (filtered candidates, user weights, serving facts, no transcript bias)
 and prints the exact request and response.
+
+Works with every provider (openrouter, ollama, vllm, systemone):
 
     uv run python scripts/probe_decisions.py
 """
@@ -12,32 +14,27 @@ import json
 import sys
 from pathlib import Path
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import settings  # noqa: E402
+from src.decision_providers import get_provider  # noqa: E402
 from src.inventory import load_cache  # noqa: E402
 from src.models import ChatMessage  # noqa: E402
 from src.router import (  # noqa: E402
-    DECISIONS_PATH,
     _PREFERENCE_TEXT,
     _build_criteria,
-    _decisions_base,
     _estimate_tokens,
     _filter_candidates,
     _format_weights_instruction,
-    _get_router_api,
     _request_requirements,
 )
 
 
-def build_payload(messages: list[ChatMessage]) -> tuple[dict, str, str]:
-    api_base, api_key = _get_router_api()
-    if not api_key:
-        raise RuntimeError("No ROUTER_API_KEY or OPENROUTER_API_KEY found")
-
+def build_payload(messages: list[ChatMessage]) -> dict:
     models = load_cache()
+    if not models:
+        raise RuntimeError("No cached models; refresh inventory first")
+
     req = _request_requirements(messages, estimated_tokens=_estimate_tokens(messages))
     filtered = _filter_candidates(models, req)
     criteria = _build_criteria(filtered)
@@ -70,49 +67,48 @@ def build_payload(messages: list[ChatMessage]) -> tuple[dict, str, str]:
             }
         },
     }
-    url = f"{_decisions_base(api_base)}{DECISIONS_PATH}"
-    return payload, url, api_key
+    return payload
 
 
 async def main() -> None:
+    provider = get_provider()
     sample_messages = [
         ChatMessage(
             role="user",
             content="Write a Python function that reverses a linked list. Use recursion.",
         )
     ]
-    payload, url, api_key = build_payload(sample_messages)
+    payload = build_payload(sample_messages)
 
     candidate_count = len(payload["questions"]["target"]["criteria"])
-    print(f"=== REQUEST ({candidate_count} candidates) ===")
-    print(f"POST {url}")
+    print(f"=== PROVIDER: {provider.name} ===")
     print(f"Model: {payload['model']}")
+    if provider.name == "systemone":
+        print(f"Base:  {settings.systemone_base}")
+    print(f"=== REQUEST ({candidate_count} candidates) ===")
     print(f"State: {json.dumps(payload['state'])}")
     print(f"Instructions: {payload['questions']['target']['instructions']}")
     print()
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-
-    print(f"=== RESPONSE (status {resp.status_code}) ===")
     try:
-        data = resp.json()
-        print(json.dumps(data, indent=2))
-        ans = data.get("answers", {}).get("target", {})
-        print("\n=== SUMMARY ===")
-        print(f"Chosen model: {ans.get('choice')}")
-        print(f"Confidence:   {ans.get('confidence')}")
-        top3 = sorted(ans.get("probabilities", {}).items(), key=lambda kv: -kv[1])[:3]
-        print(f"Top 3 probs:  {top3}")
-    except ValueError:
-        print(resp.text)
+        data = await provider.call(payload)
+    except Exception as e:
+        print(f"=== FAILED: {type(e).__name__}: {e} ===")
+        raise
+
+    print("=== RESPONSE ===")
+    print(json.dumps(data, indent=2))
+    ans = data.get("answers", {}).get("target", {})
+    print("\n=== SUMMARY ===")
+    print(f"Chosen model: {ans.get('choice')}")
+    print(f"Confidence:   {ans.get('confidence')}")
+    print(f"Min conf:     {settings.min_confidence}")
+    confidence = ans.get("confidence")
+    if isinstance(confidence, (int, float)):
+        verdict = "accepted" if confidence >= settings.min_confidence else "ABSTAINS"
+        print(f"Router would: {verdict}")
+    top3 = sorted(ans.get("probabilities", {}).items(), key=lambda kv: -kv[1])[:3]
+    print(f"Top 3 probs:  {top3}")
 
 
 if __name__ == "__main__":
