@@ -489,6 +489,138 @@ class TestPickByFeature(unittest.TestCase):
                 pick_by_feature(self.pool, feat).id, "fastest-and-smartest"
             )
 
+    def test_pick_by_cost_and_price(self):
+        from src.router import pick_by_feature
+
+        # highest-discount has lowest input (0.001) and output (0.002) -> effective 1.25/Mtok
+        self.assertEqual(pick_by_feature(self.pool, "cost").id, "highest-discount")
+        self.assertEqual(pick_by_feature(self.pool, "price").id, "highest-discount")
+
+    def test_pick_by_throughput(self):
+        from src.router import pick_by_feature
+
+        pool_with_throughput = [
+            ModelInfo(
+                id="slow-gen",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=10000,
+                throughput_p50=25.0,
+            ),
+            ModelInfo(
+                id="fast-gen",
+                discount_pct=40.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=10000,
+                throughput_p50=350.0,
+            ),
+        ]
+        self.assertEqual(
+            pick_by_feature(pool_with_throughput, "throughput").id, "fast-gen"
+        )
+
+    def test_pick_by_context_window(self):
+        from src.router import pick_by_feature
+
+        pool_with_ctx = [
+            ModelInfo(
+                id="short-ctx",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=32768,
+            ),
+            ModelInfo(
+                id="long-ctx",
+                discount_pct=40.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=1048576,
+            ),
+        ]
+        self.assertEqual(
+            pick_by_feature(pool_with_ctx, "context_window").id, "long-ctx"
+        )
+        self.assertEqual(
+            pick_by_feature(pool_with_ctx, "context_length").id, "long-ctx"
+        )
+
+    def test_pick_by_reasoning(self):
+        from src.router import pick_by_feature
+
+        pool_with_reasoning = [
+            ModelInfo(
+                id="standard-model",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=32768,
+                supported_parameters=["tools"],
+            ),
+            ModelInfo(
+                id="deep-reasoning-model",
+                discount_pct=40.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.001,
+                context_length=32768,
+                supported_parameters=["tools", "reasoning"],
+            ),
+        ]
+        self.assertEqual(
+            pick_by_feature(pool_with_reasoning, "reasoning").id, "deep-reasoning-model"
+        )
+
+    def test_pick_by_composite_score(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(
+            pick_by_feature(self.pool, "composite_score").id, "fastest-and-smartest"
+        )
+        self.assertEqual(
+            pick_by_feature(self.pool, "model_tier").id, "fastest-and-smartest"
+        )
+
+    def test_composite_score_heuristic_fallback(self):
+        m_frontier = ModelInfo(
+            id="deepseek/deepseek-v3",
+            name="DeepSeek V3",
+            description="A flagship 671B model.",
+            discount_pct=50.0,
+            provider="p",
+            input_price=0.001,
+            output_price=0.001,
+            context_length=64000,
+        )
+        m_mini = ModelInfo(
+            id="vendor/model-mini",
+            name="Model Mini",
+            description="A fast 8B flash model.",
+            discount_pct=50.0,
+            provider="p",
+            input_price=0.001,
+            output_price=0.001,
+            context_length=64000,
+        )
+        self.assertGreater(m_frontier.composite_score, m_mini.composite_score)
+        self.assertEqual(m_frontier.composite_score, 60.0)
+        self.assertEqual(m_mini.composite_score, 30.0)
+
+    def test_settings_weights_string_parsing(self):
+        from src.config import Settings
+
+        s = Settings(ROUTER_WEIGHTS="discount=0.5,cost=0.3,throughput=0.2")  # type: ignore[call-arg]
+        self.assertEqual(s.weights["discount"], 0.5)
+        self.assertEqual(s.weights["cost"], 0.3)
+        self.assertEqual(s.weights["throughput"], 0.2)
+
     def test_invalid_low_confidence_choice_rejected(self):
         from pydantic import ValidationError
         from src.config import Settings

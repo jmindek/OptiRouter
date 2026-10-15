@@ -157,7 +157,7 @@ def _describe_model(m: ModelInfo) -> str:
     params = set(m.supported_parameters)
     if "tools" in params:
         features.append("tool calling")
-    if "reasoning" in params or "include_reasoning" in params:
+    if "reasoning" in params or "include_reasoning" in params or m.has_reasoning:
         features.append("reasoning")
     if "structured_outputs" in params:
         features.append("structured output")
@@ -175,10 +175,12 @@ def _describe_model(m: ModelInfo) -> str:
         f"agentic {m.agentic_index or 0.0:.0f}",
     ]
     facts.append(", ".join(scores))
+    facts.append(f"composite capability {m.composite_score:.0f}")
 
     facts.append(f"{m.discount_pct:.0f}% off")
     # Effective price is the tie-breaker the cost preference acts on.
     facts.append(f"${m.input_price * 1e6:.2f}/Mtok in")
+    facts.append(f"${m.effective_cost:.2f}/Mtok effective cost")
 
     # Serving facts describe the provider, not the model. The same model is
     # often served by many providers at different speeds and reliabilities,
@@ -397,13 +399,58 @@ def pick_by_feature(models: list[ModelInfo], feature: str) -> ModelInfo:
             key=lambda m: (
                 m.latency_p50_ms if m.latency_p50_ms is not None else float("inf"),
                 -m.discount_pct,
-                m.input_price,
+                m.effective_cost,
             ),
         )
     if feature == "uptime":
         return max(
             models,
-            key=lambda m: (m.uptime_pct or 0.0, m.discount_pct, -m.input_price),
+            key=lambda m: (m.uptime_pct or 0.0, m.discount_pct, -m.effective_cost),
+        )
+    if feature == "throughput":
+        return max(
+            models,
+            key=lambda m: (
+                m.throughput_p50 or 0.0,
+                m.discount_pct,
+                -m.effective_cost,
+            ),
+        )
+    if feature in ("cost", "price", "effective_cost"):
+        return min(
+            models,
+            key=lambda m: (
+                m.effective_cost,
+                -m.discount_pct,
+                m.latency_p50_ms if m.latency_p50_ms is not None else float("inf"),
+            ),
+        )
+    if feature in ("context_window", "context_length"):
+        return max(
+            models,
+            key=lambda m: (
+                m.context_length or 0,
+                -m.effective_cost,
+                -m.discount_pct,
+            ),
+        )
+    if feature == "reasoning":
+        return max(
+            models,
+            key=lambda m: (
+                1 if m.has_reasoning else 0,
+                m.composite_score,
+                -m.effective_cost,
+            ),
+        )
+    if feature in ("composite_score", "model_tier"):
+        return max(
+            models,
+            key=lambda m: (
+                m.composite_score,
+                -m.effective_cost,
+                -m.discount_pct,
+            ),
         )
     if feature in ("coding_index", "intelligence_index", "agentic_index"):
         return max(
@@ -411,11 +458,11 @@ def pick_by_feature(models: list[ModelInfo], feature: str) -> ModelInfo:
             key=lambda m: (
                 getattr(m, feature) or 0.0,
                 m.discount_pct,
-                -m.input_price,
+                -m.effective_cost,
             ),
         )
     # Default: "discount"
-    return max(models, key=lambda m: (m.discount_pct, -m.input_price))
+    return max(models, key=lambda m: (m.discount_pct, -m.effective_cost))
 
 
 def _decisions_base(api_base: str) -> str:

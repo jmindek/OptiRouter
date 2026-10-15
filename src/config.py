@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -46,6 +46,14 @@ class Settings(BaseSettings):
         "coding_index",
         "intelligence_index",
         "agentic_index",
+        "cost",
+        "price",
+        "throughput",
+        "context_window",
+        "context_length",
+        "reasoning",
+        "composite_score",
+        "model_tier",
     ] = Field(default="discount", validation_alias="ROUTER_LOW_CONFIDENCE_CHOICE")
 
     # Routing preference handed to the decision model as a tie-breaker.
@@ -87,15 +95,37 @@ class Settings(BaseSettings):
     # Accepted format: string "discount=0.4,latency=0.2,..." or dict
     weights: dict[str, float] = Field(
         default_factory=lambda: {
-            "discount": 0.4,
-            "latency": 0.2,
-            "uptime": 0.2,
-            "coding_index": 0.2,
+            "discount": 0.3,
+            "cost": 0.2,
+            "latency": 0.15,
+            "throughput": 0.15,
+            "uptime": 0.1,
+            "coding_index": 0.1,
             "intelligence_index": 0.0,
             "agentic_index": 0.0,
+            "context_window": 0.0,
+            "reasoning": 0.0,
+            "composite_score": 0.0,
         },
         validation_alias="ROUTER_WEIGHTS",
     )
+
+    @field_validator("weights", mode="before")
+    @classmethod
+    def _parse_weights(cls, v):
+        if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("{"):
+                import json
+
+                return json.loads(v)
+            parsed = {}
+            for item in v.split(","):
+                if "=" in item:
+                    k, val = item.split("=", 1)
+                    parsed[k.strip()] = float(val.strip())
+            return parsed
+        return v
 
     # Cache
     cache_file: str = Field(
