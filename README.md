@@ -23,7 +23,8 @@ docker compose up --build
 | `ROUTER_MODE` | `auto` | Routing mode: cloud, local, auto |
 | `ROUTER_OMLX_BASE` | `http://127.0.0.1:8000` | Local oMLX fallback base URL |
 | `ROUTER_MIN_DISCOUNT` | `0.25` | Minimum discount threshold (0.0–1.0) |
-| `ROUTER_MIN_CONFIDENCE` | `0.30` | Minimum decision-model confidence to accept a pick; below it the router uses the best available model |
+| `ROUTER_MIN_CONFIDENCE` | `0.30` | Minimum decision-model confidence to accept a pick; below it the router picks by `ROUTER_LOW_CONFIDENCE_CHOICE` |
+| `ROUTER_LOW_CONFIDENCE_CHOICE` | `discount` | Feature used to pick the best candidate when confidence < `ROUTER_MIN_CONFIDENCE`: `discount`, `latency`, `uptime`, `coding_index`, `intelligence_index`, `agentic_index` |
 | `ROUTER_PREFERENCE` | `cost` | Tie-breaker handed to the decision model: `cost`, `quality`, or `none` |
 | `ROUTER_FALLBACK_MODE` | `static` | `static` = auto-fallback to `ROUTER_STATIC_FALLBACK`; `halt` = return 503 |
 | `ROUTER_STATIC_FALLBACK` | `openrouter/deepseek/deepseek-v3.1` | Fallback model when routing fails |
@@ -59,7 +60,7 @@ When the selected model falls off the discount list, the router handles it based
 
 4. **Decision model called** via OpenRouter Decisions API (`POST /api/alpha/decisions`). The eligible pool (all models passing hard requirements) is sent as `criteria` — one entry per candidate with its facts (name, description, modalities, benchmark scores, discount, price, serving endpoint stats). The user's configured weights are included in the instructions so the decision model weighs trade-offs accordingly.
 
-5. **Decision model picks** a candidate. If confidence ≥ `ROUTER_MIN_CONFIDENCE`, the request is forwarded. Otherwise the best available discounted model is used.
+5. **Decision model picks** a candidate. If confidence ≥ `ROUTER_MIN_CONFIDENCE`, the request is forwarded. Otherwise the best candidate according to `ROUTER_LOW_CONFIDENCE_CHOICE` (default `discount`) is used.
 
 6. **Forwarding**: proxied to OpenRouter with streaming support and rate limiting.
 

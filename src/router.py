@@ -386,6 +386,38 @@ def _parse_decision(data: dict) -> RoutingDecision:
     return RoutingDecision(choice, confidence, "ok")
 
 
+def pick_by_feature(models: list[ModelInfo], feature: str) -> ModelInfo:
+    """Pick the best model from the pool according to a single feature.
+
+    Used when the decision model abstains on low confidence.
+    """
+    if feature == "latency":
+        return min(
+            models,
+            key=lambda m: (
+                m.latency_p50_ms if m.latency_p50_ms is not None else float("inf"),
+                -m.discount_pct,
+                m.input_price,
+            ),
+        )
+    if feature == "uptime":
+        return max(
+            models,
+            key=lambda m: (m.uptime_pct or 0.0, m.discount_pct, -m.input_price),
+        )
+    if feature in ("coding_index", "intelligence_index", "agentic_index"):
+        return max(
+            models,
+            key=lambda m: (
+                getattr(m, feature) or 0.0,
+                m.discount_pct,
+                -m.input_price,
+            ),
+        )
+    # Default: "discount"
+    return max(models, key=lambda m: (m.discount_pct, -m.input_price))
+
+
 def _decisions_base(api_base: str) -> str:
     """Normalize the API base to the OpenRouter host root.
 

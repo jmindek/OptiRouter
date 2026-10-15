@@ -94,7 +94,7 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 ### 3. Main App (`src/main.py`)
 - FastAPI app with `/v1/chat/completions`.
 - `forward_to_openrouter()`: proxies to OpenRouter with reactive rate limiting, preserving all request fields (temperature, tools, logprobs, ...) and passing the non-stream response through unchanged.
-- On a `low_confidence` decision, uses the best available discounted model instead of the static fallback.
+- On a `low_confidence` decision, uses the best candidate according to `low_confidence_choice` (default `discount`) instead of the static fallback.
 - `/healthz` reports cache age and model count.
 - Fallback: static model or 503 when no models are available.
 
@@ -109,14 +109,14 @@ No Playwright: the discount sweep replaced the browser scraper (`src/scraper.py`
 ### 6. Config (`src/config.py`)
 - Pydantic Settings with env var aliases.
 - All vars prefixed with `ROUTER_` (except `OPENROUTER_API_KEY`).
-- `min_discount` (default 0.25), `min_confidence` (default 0.30), `min_context_length` (default 131072), `min_endpoint_uptime` (default 95.0), `min_endpoint_requests` (default 100), `weights` (default: discount=0.4, latency=0.2, uptime=0.2, coding_index=0.2, intelligence_index=0.0, agentic_index=0.0), `preference` (cost/quality/none).
+- `min_discount` (default 0.25), `min_confidence` (default 0.30), `low_confidence_choice` (default `discount`), `min_context_length` (default 131072), `min_endpoint_uptime` (default 95.0), `min_endpoint_requests` (default 100), `weights` (default: discount=0.4, latency=0.2, uptime=0.2, coding_index=0.2, intelligence_index=0.0, agentic_index=0.0), `preference` (cost/quality/none).
 
 ---
 
 ## Current State
 
 ### Tests
-- **88 tests, all passing.** `uv run pytest`.
+- **93 tests, all passing.** `uv run pytest`.
 - Coverage: router (requirements, filtering, decision parsing), inventory sweep (non-chat filtering, cache fallback), cache save/load, model validation, rate limiter, handoff modes, P0 regressions, Langfuse exporter.
 - `uv run pyright src/` reports 0 errors.
 

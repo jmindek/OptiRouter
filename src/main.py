@@ -14,7 +14,12 @@ from src.handoff import handle_model_handoff, model_in_inventory
 from src.inventory import fetch_discounted_models, load_cache, save_cache
 from src.models import ChatCompletionRequest
 from src.rate_limiter import rate_limiter
-from src.router import RoutingDecision, classify_request, render_transcript
+from src.router import (
+    RoutingDecision,
+    classify_request,
+    pick_by_feature,
+    render_transcript,
+)
 from src.telemetry import (
     errors_total,
     handoff_events,
@@ -294,12 +299,13 @@ async def chat_completions(request: ChatCompletionRequest):
                 if decision.model_id:
                     model = decision.model_id
                 elif decision.reason == "low_confidence":
-                    # Decision model answered but was not sure enough: use the
-                    # best available discounted model rather than a fixed one.
-                    model = models[0].id
+                    # Decision model answered but was not sure enough: pick
+                    # the best candidate by the configured low_confidence_choice.
+                    chosen = pick_by_feature(models, settings.low_confidence_choice)
+                    model = chosen.id
                     logger.info(
                         f"Decision abstained (confidence {decision.confidence:.2f}), "
-                        f"using best available: {model}"
+                        f"using best by {settings.low_confidence_choice}: {model}"
                     )
                 elif settings.fallback_mode == "halt":
                     raise HTTPException(status_code=503, detail="Routing failed")

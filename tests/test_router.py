@@ -418,5 +418,84 @@ class TestClassifyRequest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.reason, "parse_error")
 
 
+class TestPickByFeature(unittest.TestCase):
+    def setUp(self):
+        self.pool = [
+            ModelInfo(
+                id="first-in-list",
+                discount_pct=50.0,
+                provider="p",
+                input_price=0.002,
+                output_price=0.004,
+                context_length=131072,
+                latency_p50_ms=800.0,
+                uptime_pct=96.0,
+                coding_index=40.0,
+                intelligence_index=50.0,
+                agentic_index=30.0,
+            ),
+            ModelInfo(
+                id="highest-discount",
+                discount_pct=85.0,
+                provider="p",
+                input_price=0.001,
+                output_price=0.002,
+                context_length=131072,
+                latency_p50_ms=900.0,
+                uptime_pct=95.0,
+                coding_index=35.0,
+                intelligence_index=45.0,
+                agentic_index=25.0,
+            ),
+            ModelInfo(
+                id="fastest-and-smartest",
+                discount_pct=30.0,
+                provider="p",
+                input_price=0.003,
+                output_price=0.006,
+                context_length=131072,
+                latency_p50_ms=250.0,
+                uptime_pct=99.9,
+                coding_index=75.0,
+                intelligence_index=80.0,
+                agentic_index=70.0,
+            ),
+        ]
+
+    def test_pick_by_discount(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(pick_by_feature(self.pool, "discount").id, "highest-discount")
+
+    def test_pick_by_latency(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(
+            pick_by_feature(self.pool, "latency").id, "fastest-and-smartest"
+        )
+
+    def test_pick_by_uptime(self):
+        from src.router import pick_by_feature
+
+        self.assertEqual(
+            pick_by_feature(self.pool, "uptime").id, "fastest-and-smartest"
+        )
+
+    def test_pick_by_indexes(self):
+        from src.router import pick_by_feature
+
+        for feat in ("coding_index", "intelligence_index", "agentic_index"):
+            self.assertEqual(
+                pick_by_feature(self.pool, feat).id, "fastest-and-smartest"
+            )
+
+    def test_invalid_low_confidence_choice_rejected(self):
+        from pydantic import ValidationError
+        from src.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(ROUTER_LOW_CONFIDENCE_CHOICE="invalid")  # type: ignore[call-arg]
+
+
 if __name__ == "__main__":
     unittest.main()

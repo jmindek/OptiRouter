@@ -30,12 +30,23 @@ class Settings(BaseSettings):
     min_discount: float = Field(default=0.25, validation_alias="ROUTER_MIN_DISCOUNT")
 
     # Minimum decision-model confidence (0.0-1.0) to accept a routing pick.
-    # Below this the router abstains and uses the best available model.
+    # Below this the router abstains and uses low_confidence_choice.
     # Observed range for model selection is ~0.28-0.40; 0.55 abstained on
     # essentially every request. See README for the tuning note.
     min_confidence: float = Field(
         default=0.30, validation_alias="ROUTER_MIN_CONFIDENCE"
     )
+
+    # Which feature to pick the best candidate by when the decision model
+    # abstains due to low confidence. Options match the feature weights.
+    low_confidence_choice: Literal[
+        "discount",
+        "latency",
+        "uptime",
+        "coding_index",
+        "intelligence_index",
+        "agentic_index",
+    ] = Field(default="discount", validation_alias="ROUTER_LOW_CONFIDENCE_CHOICE")
 
     # Routing preference handed to the decision model as a tie-breaker.
     # "cost" prefers the cheaper candidate when models are otherwise comparable.
