@@ -99,7 +99,7 @@ class LangfuseSpanProcessor(SpanProcessor):
             "id": trace_id,
             "timestamp": timestamp,
             "name": span.name,
-            "metadata": {"service": "optirouter"},
+            "metadata": {"service": "OptiRouter"},
         }
         if trace_input is not None:
             trace_body["input"] = trace_input
