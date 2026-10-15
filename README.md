@@ -1,5 +1,7 @@
 # OptiRouter
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-FF5E5B?style=flat&logo=kofi&logoColor=white)](https://ko-fi.com/jerrymindek)
+
 Weighted feature router for optimal inference — maximize whatever you value most.
 
 I built this after noticing how many excellent models are discounted on OpenRouter — but they rotate so frequently that sitting on one model and expecting to pay that low price forever isn't realistic. OptiRouter scores each candidate against configurable weights (discount, cost, latency, throughput, uptime, coding index, etc.) and picks the best fit for every request. Provider-agnostic by design; OpenRouter is step 1, with support for any provider coming soon.
@@ -143,7 +145,7 @@ Client → /v1/chat/completions → classify_request() → select discounted mod
 
 [MIT](LICENSE)
 
-[ko-fi.com/jerrymindek](https://ko-fi.com/jerrymindek)
+If this project is useful, consider [buying me a coffee](https://ko-fi.com/jerrymindek).
 
 
 ```bash
