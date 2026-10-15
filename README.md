@@ -1,4 +1,4 @@
-# Discount Model Router
+# OptiRoute
 
 Routes AI requests to discounted OpenRouter models. Uses a decision model to pick the best discounted candidate for each request, guided by user-configurable feature weights.
 
