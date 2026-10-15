@@ -101,7 +101,8 @@ async def _start_local_inference_server() -> subprocess.Popen | None:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"{base}/v1/systemone")
-                if resp.status_code == 200:
+                # /v1/systemone is POST-only, so a 405 still proves it is up.
+                if resp.status_code < 500:
                     logger.info("SystemOne server is available")
                 else:
                     logger.warning(f"SystemOne returned HTTP {resp.status_code}")

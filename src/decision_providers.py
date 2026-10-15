@@ -242,8 +242,7 @@ class SystemOneProvider(DecisionModelProvider):
             "target": {
                 "type": "choice",
                 "instructions": instructions,
-                "options": list(criteria.keys()),
-                "option_descriptions": {k: v for k, v in criteria.items()},
+                "criteria": {k: v for k, v in criteria.items()},
             }
         }
 
